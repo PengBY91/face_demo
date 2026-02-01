@@ -3,99 +3,117 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>识别历史 - 人脸识别系统</title>
+    <title>识别历史 - FaceEye</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
       rel="stylesheet"
     />
+    <link rel="stylesheet" href="/static/css/style.css" />
     <style>
-      :root {
-        --primary-color: #4a90e2;
-        --bg-color: #f4f7f6;
-      }
-      body {
-        background-color: var(--bg-color);
-        font-family:
-          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI",
-          Tahoma, Geneva, Verdana, sans-serif;
-      }
-      .navbar {
-        background: rgba(255, 255, 255, 0.8);
-        backdrop-filter: blur(10px);
-        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-      }
-      .history-card {
-        transition: transform 0.2s;
-        border: none;
-        border-radius: 12px;
-        overflow: hidden;
-      }
-      .history-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
-      }
       .history-img {
         height: 180px;
         object-fit: cover;
+        border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+      }
+      .confidence-badge {
+        background: rgba(79, 70, 229, 0.1);
+        color: var(--primary);
+        padding: 4px 10px;
+        border-radius: 8px;
+        font-weight: 700;
+        font-size: 0.85rem;
+        border: 1px solid rgba(79, 70, 229, 0.2);
+        backdrop-filter: blur(4px);
       }
       .filter-panel {
-        background: white;
-        padding: 20px;
-        border-radius: 12px;
-        margin-bottom: 30px;
-        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+        padding: 24px;
+        margin-bottom: 40px;
       }
     </style>
   </head>
   <body>
-    <nav class="navbar navbar-expand-lg navbar-light sticky-top">
+    <!-- Navbar at Very Top -->
+    <nav class="navbar navbar-expand-lg navbar-light sticky-top shadow-sm">
       <div class="container">
-        <a class="navbar-brand fw-bold" href="/">FaceEye</a>
-        <div class="navbar-nav">
-          <a class="nav-link" href="/">人员管理</a>
-          <a class="nav-link active" href="/history">识别历史</a>
-          <a class="nav-link" href="/search">AI 检索</a>
+        <a class="navbar-brand" href="/">FaceEye</a>
+        <button
+          class="navbar-toggler border-0"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#navbarNav"
+        >
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+          <ul class="navbar-nav ms-auto">
+            <li class="nav-item"><a class="nav-link" href="/">人员管理</a></li>
+            <li class="nav-item">
+              <a class="nav-link active" href="/history">识别历史</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/search">AI 检索</a>
+            </li>
+          </ul>
         </div>
       </div>
     </nav>
 
     <div class="container py-5">
-      <h2 class="mb-4">识别历史记录</h2>
+      <div class="animate-fade-in mb-5">
+        <span class="hero-badge">Recognition Insights</span>
+        <h1 class="display-5 fw-bold text-dark">识别历史</h1>
+        <p class="text-muted lead">
+          通过时间或姓名筛选，追溯系统捕捉到的每一个瞬间
+        </p>
+      </div>
 
       <!-- Filters -->
-      <div class="filter-panel">
+      <div
+        class="glass-panel filter-panel animate-fade-in"
+        style="animation-delay: 0.2s"
+      >
         <form id="filterForm" class="row g-3">
-          <div class="col-md-3">
-            <label class="form-label">姓名</label>
+          <div class="col-lg-3 col-md-6">
+            <label class="form-label small text-muted fw-bold mb-2"
+              >搜索姓名</label
+            >
             <input
               type="text"
               class="form-control"
               id="filterName"
-              placeholder="搜索姓名..."
+              placeholder="人员名称..."
             />
           </div>
-          <div class="col-md-3">
-            <label class="form-label">开始时间</label>
+          <div class="col-lg-3 col-md-6">
+            <label class="form-label small text-muted fw-bold mb-2"
+              >开始时间</label
+            >
             <input
               type="datetime-local"
               class="form-control"
               id="filterStart"
             />
           </div>
-          <div class="col-md-3">
-            <label class="form-label">结束时间</label>
+          <div class="col-lg-3 col-md-6">
+            <label class="form-label small text-muted fw-bold mb-2"
+              >结束时间</label
+            >
             <input type="datetime-local" class="form-control" id="filterEnd" />
           </div>
-          <div class="col-md-3 d-flex align-items-end">
-            <button type="submit" class="btn btn-primary w-100">
-              应用筛选
+          <div class="col-lg-3 col-md-6 d-flex align-items-end">
+            <button type="submit" class="btn btn-primary w-100 py-3 shadow-sm">
+              立即筛选
             </button>
           </div>
         </form>
       </div>
 
       <!-- History List -->
-      <div class="row g-4" id="historyList">
+      <div
+        class="row g-4 animate-fade-in"
+        id="historyList"
+        style="animation-delay: 0.4s"
+      >
         <!-- Cards will be injected here -->
       </div>
 
@@ -104,48 +122,68 @@
       </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
       async function loadHistory() {
         const name = document.getElementById("filterName").value;
         const start = document.getElementById("filterStart").value;
         const end = document.getElementById("filterEnd").value;
 
-        let url = `/api/history?limit=40`;
+        let url = `/api/history?limit=48`;
         if (name) url += `&name=${encodeURIComponent(name)}`;
         if (start) url += `&start_time=${start.replace("T", " ")}`;
         if (end) url += `&end_time=${end.replace("T", " ")}`;
 
-        document.getElementById("loading").style.display = "block";
+        const container = document.getElementById("historyList");
+        const loader = document.getElementById("loading");
+
+        loader.style.display = "block";
+        container.style.opacity = "0.5";
+
         try {
           const res = await fetch(url);
           const data = await res.json();
-          const container = document.getElementById("historyList");
           container.innerHTML = "";
 
-          data.forEach((item) => {
+          if (data.length === 0) {
+            container.innerHTML =
+              '<div class="col-12 text-center py-5"><p class="text-muted">未找到匹配的识别记录。</p></div>';
+            return;
+          }
+
+          data.forEach((item, index) => {
+            const delay = (index % 12) * 0.05;
             const card = `
-                        <div class="col-md-3 col-sm-6">
-                            <div class="card history-card h-100 shadow-sm">
-                                <img src="${item.image_url}" class="card-img-top history-img" alt="${item.person_name}">
+                        <div class="col-xl-3 col-lg-4 col-sm-6 animate-fade-in" style="animation-delay: ${delay}s">
+                            <div class="card h-100">
+                                <div class="position-relative">
+                                    <img src="${item.image_url}" class="card-img-top history-img" alt="${item.person_name}">
+                                    <div class="position-absolute top-0 end-0 m-2">
+                                        <span class="confidence-badge">${(item.confidence * 100).toFixed(1)}%</span>
+                                    </div>
+                                </div>
                                 <div class="card-body">
-                                    <h5 class="card-title mb-1">${item.person_name}</h5>
-                                    <p class="card-text text-muted small mb-0">相似度: ${(item.confidence * 100).toFixed(1)}%</p>
-                                    <p class="card-text text-muted small">${item.timestamp}</p>
+                                    <h5 class="card-title mb-1 text-dark fw-bold text-truncate">${item.person_name}</h5>
+                                    <div class="d-flex align-items-center text-muted small mt-2">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                                          <path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/>
+                                          <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/>
+                                        </svg>
+                                        ${item.timestamp}
+                                    </div>
                                 </div>
                             </div>
                         </div>
                     `;
             container.innerHTML += card;
           });
-
-          if (data.length === 0) {
-            container.innerHTML =
-              '<div class="col-12 text-center py-5"><p class="text-muted">没有找到匹配的记录。</p></div>';
-          }
         } catch (err) {
           console.error(err);
+          container.innerHTML =
+            '<div class="col-12 text-center py-5"><p class="text-danger">加载失败，请刷新页面重试。</p></div>';
         } finally {
-          document.getElementById("loading").style.display = "none";
+          loader.style.display = "none";
+          container.style.opacity = "1";
         }
       }
 

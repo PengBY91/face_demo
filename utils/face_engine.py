@@ -52,7 +52,12 @@ class FaceEngine:
 
         # 加载 InsightFace 检测器 (使用 buffalo_l 模型包)
         print(f"FaceEngine: 正在初始化 InsightFace 检测器 (buffalo_l, ctx_id={ctx_id})...")
-        self.det_model = FaceAnalysis(name='buffalo_l', allowed_modules=['detection'])
+        # 如果 rec_model_path 为空，使用默认路径
+        models_root = os.path.dirname(os.path.dirname(rec_model_path)) if rec_model_path else os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
+        
+        # models_parent 是 models 目录所在的父目录，FaceAnalysis 会在该目录下寻找 models/<name>
+        models_parent = os.path.dirname(models_root)
+        self.det_model = FaceAnalysis(name='buffalo_l', root=models_parent, allowed_modules=['detection'])
         self.det_model.prepare(ctx_id=ctx_id, det_size=det_size)
 
         # 加载 ArcFace 识别模型

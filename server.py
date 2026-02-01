@@ -22,9 +22,10 @@ from utils.history_manager import HistoryManager
 # 初始化
 app = FastAPI(title="Face DB Manager")
 
-# Mount static files to gallery directory (only for other static assets if any)
-os.makedirs(GALLERY_DIR, exist_ok=True)
-# app.mount("/static", StaticFiles(directory=GALLERY_DIR), name="static") # 禁用静态目录映射，改用 API 读取
+# Mount static files
+os.makedirs("static", exist_ok=True)
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 
 # 初始化人脸引擎和库管理器
 print("服务端: 正在初始化...")
@@ -203,19 +204,19 @@ async def get_history_image(record_id: int):
 @app.post("/api/record_v2")
 async def add_record_v2(name: str = Form(...), confidence: float = Form(...), file: UploadFile = File(...)):
     """记录一次识别结果 (由客户端调用)"""
-    import cv2
-    contents = await file.read()
-    nparr = np.frombuffer(contents, np.uint8)
-    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    
-    if img is None:
-        raise HTTPException(400, "无效的图片数据")
+    try:
+        # 直接读取原始字节，避免冗余的 cv2 解码（除非需要处理图片，但这里只是保存）
+        contents = await file.read()
         
-    success = history_manager.add_history_record(name, confidence, img)
-    if not success:
-        raise HTTPException(500, "保存历史记录失败")
-        
-    return {"status": "ok"}
+        # 保存到历史记录
+        success = history_manager.add_history_record(name, confidence, contents)
+        if not success:
+            raise HTTPException(500, "保存历史记录失败")
+            
+        return {"status": "ok"}
+    except Exception as e:
+        print(f"服务端: 保存记录失败: {e}")
+        raise HTTPException(500, detail=str(e))
 
 
 class NLQueryRequest(BaseModel):

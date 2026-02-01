@@ -3,128 +3,147 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>人脸识别管理系统</title>
+    <title>人员管理 - FaceEye</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
       rel="stylesheet"
     />
+    <link rel="stylesheet" href="/static/css/style.css" />
     <style>
-      :root {
-        --primary-color: #4a90e2;
-        --bg-color: #f4f7f6;
-      }
-      body {
-        background-color: var(--bg-color);
-        font-family:
-          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI",
-          Tahoma, Geneva, Verdana, sans-serif;
-      }
-      .navbar {
-        background: rgba(255, 255, 255, 0.8);
-        backdrop-filter: blur(10px);
-        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
-      }
-      .person-card {
-        margin-bottom: 20px;
-        transition: transform 0.2s;
-        border: none;
-        border-radius: 12px;
-        overflow: hidden;
-      }
-      .person-card:hover {
-        transform: translateY(-5px);
-        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
-      }
       .person-img {
         width: 100%;
-        height: 200px;
+        height: 220px;
         object-fit: cover;
+        border-bottom: 1px solid var(--glass-border);
+      }
+      .card-actions {
+        padding: 1.25rem;
+        background: rgba(0, 0, 0, 0.1);
+      }
+      #peopleList {
+        min-height: 400px;
       }
     </style>
   </head>
   <body>
-    <nav class="navbar navbar-expand-lg navbar-light sticky-top">
+    <!-- Navbar at Very Top -->
+    <nav class="navbar navbar-expand-lg navbar-light sticky-top shadow-sm">
       <div class="container">
-        <a class="navbar-brand fw-bold" href="/">FaceEye</a>
-        <div class="navbar-nav">
-          <a class="nav-link active" href="/">人员管理</a>
-          <a class="nav-link" href="/history">识别历史</a>
-          <a class="nav-link" href="/search">AI 检索</a>
+        <a class="navbar-brand" href="/">FaceEye</a>
+        <button
+          class="navbar-toggler border-0"
+          type="button"
+          data-bs-toggle="collapse"
+          data-bs-target="#navbarNav"
+        >
+          <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+          <ul class="navbar-nav ms-auto">
+            <li class="nav-item">
+              <a class="nav-link active" href="/">人员管理</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/history">识别历史</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link" href="/search">AI 检索</a>
+            </li>
+          </ul>
         </div>
       </div>
     </nav>
 
-    <div class="container py-5">
-      <h1 class="mb-4 text-center">人脸识别管理系统</h1>
+    <div class="container pb-5">
+      <div class="py-4 animate-fade-in">
+        <h2 class="fw-bold text-dark">成员库管理</h2>
+      </div>
 
-      <!-- Add New Person -->
-      <div class="card mb-5 shadow-sm">
-        <div class="card-body">
-          <h5 class="card-title">注册新人员</h5>
-          <form id="addForm" class="row g-3">
-            <div class="col-md-4">
-              <input
-                type="text"
-                class="form-control"
-                id="uName"
-                placeholder="姓名"
-                required
-              />
-            </div>
-            <div class="col-md-4">
-              <input
-                type="file"
-                class="form-control"
-                id="uFile"
-                accept="image/*"
-                required
-              />
-            </div>
-            <div class="col-md-4">
-              <button type="submit" class="btn btn-primary w-100">
-                上传并注册
-              </button>
-            </div>
-          </form>
+      <!-- Registration Section -->
+      <div
+        class="row justify-content-center mb-5 animate-fade-in"
+        style="animation-delay: 0.2s"
+      >
+        <div class="col-lg-8">
+          <div class="glass-panel p-4 p-md-5">
+            <h3 class="mb-4 text-dark fw-bold">注册新人员</h3>
+            <form id="addForm" class="row g-4">
+              <div class="col-md-5">
+                <label class="form-label small text-muted fw-bold mb-2"
+                  >姓名</label
+                >
+                <input
+                  type="text"
+                  class="form-control"
+                  id="uName"
+                  placeholder="输入人员姓名..."
+                  required
+                />
+              </div>
+              <div class="col-md-5">
+                <label class="form-label small text-muted fw-bold mb-2"
+                  >照片</label
+                >
+                <input
+                  type="file"
+                  class="form-control"
+                  id="uFile"
+                  accept="image/*"
+                  required
+                />
+              </div>
+              <div class="col-md-2 d-flex align-items-end">
+                <button type="submit" class="btn btn-primary w-100 py-3">
+                  上传
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       </div>
 
-      <!-- People List -->
-      <div class="row" id="peopleList">
-        <!-- Cards will be injected here -->
+      <!-- People Grid -->
+      <div
+        class="row g-4 animate-fade-in"
+        id="peopleList"
+        style="animation-delay: 0.4s"
+      >
+        <!-- Loader -->
+        <div class="col-12 text-center py-5">
+          <div class="spinner-border text-primary" role="status"></div>
+        </div>
       </div>
     </div>
 
-    <!-- Rename Modal -->
     <div class="modal fade" id="renameModal" tabindex="-1">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title">重命名</h5>
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content glass-panel border-0">
+          <div class="modal-header border-0 pb-0">
+            <h5 class="modal-title text-dark fw-bold">重命名人员</h5>
             <button
               type="button"
               class="btn-close"
               data-bs-dismiss="modal"
             ></button>
           </div>
-          <div class="modal-body">
+          <div class="modal-body py-4">
             <input type="hidden" id="oldName" />
-            <div class="mb-3">
-              <label class="form-label">新姓名</label>
+            <div class="mb-0">
+              <label class="form-label small text-muted fw-bold">新姓名</label>
               <input type="text" class="form-control" id="newName" />
             </div>
           </div>
-          <div class="modal-footer">
+          <div class="modal-footer border-0 pt-0">
             <button
               type="button"
-              class="btn btn-secondary"
+              class="btn btn-outline-secondary border-0"
               data-bs-dismiss="modal"
             >
               取消
             </button>
             <button
               type="button"
-              class="btn btn-primary"
+              class="btn btn-primary shadow-sm"
               onclick="confirmRename()"
             >
               保存修改
@@ -144,15 +163,30 @@
         const container = document.getElementById("peopleList");
         container.innerHTML = "";
 
-        data.forEach((p) => {
+        if (data.length === 0) {
+          container.innerHTML =
+            '<div class="col-12 text-center py-5"><p class="text-muted">库中暂无人员数据，请先上传注册。</p></div>';
+          return;
+        }
+
+        data.forEach((p, index) => {
+          const delay = (index % 12) * 0.05;
           const card = `
-                <div class="col-md-3 col-sm-6 person-card">
-                    <div class="card shadow-sm h-100">
-                        <img src="${p.image_url}" class="card-img-top person-img" alt="${p.name}">
-                        <div class="card-body text-center">
-                            <h5 class="card-title">${p.name}</h5>
-                            <button class="btn btn-sm btn-outline-secondary me-2" onclick="openRename('${p.name}')">编辑姓名</button>
-                            <button class="btn btn-sm btn-outline-danger" onclick="deletePerson('${p.name}')">删除</button>
+                <div class="col-xl-3 col-lg-4 col-sm-6 animate-fade-in" style="animation-delay: ${delay}s">
+                    <div class="card h-100">
+                        <img src="${p.image_url}" class="person-img" alt="${p.name}">
+                        <div class="card-body text-center py-3">
+                            <h5 class="card-title mb-0">${p.name}</h5>
+                            <p class="small text-muted mb-0">已注册</p>
+                        </div>
+                        <div class="card-actions d-flex gap-2">
+                            <button class="btn btn-sm btn-outline-primary flex-grow-1" onclick="openRename('${p.name}')">重命名</button>
+                            <button class="btn btn-sm btn-link text-danger p-0 px-2 border-0" onclick="deletePerson('${p.name}')">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                                  <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+                                  <path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
+                                </svg>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -166,6 +200,11 @@
         .getElementById("addForm")
         .addEventListener("submit", async (e) => {
           e.preventDefault();
+          const btn = e.target.querySelector('button[type="submit"]');
+          const originalText = btn.textContent;
+          btn.textContent = "上传中...";
+          btn.disabled = true;
+
           const formData = new FormData();
           formData.append("name", document.getElementById("uName").value);
           formData.append("file", document.getElementById("uFile").files[0]);
@@ -177,22 +216,22 @@
             });
             const result = await res.json();
             if (res.ok) {
-              alert("添加成功！");
               document.getElementById("addForm").reset();
               loadPeople();
             } else {
-              const errorMsg = result.detail || "上传失败";
-              alert("错误: " + errorMsg);
+              alert("错误: " + (result.detail || "上传失败"));
             }
           } catch (err) {
-            console.error(err);
             alert("错误: 连接失败或服务器错误");
+          } finally {
+            btn.textContent = originalText;
+            btn.disabled = false;
           }
         });
 
       // Delete Person
       async function deletePerson(name) {
-        if (!confirm(`确定要删除 ${name} 吗？`)) return;
+        if (!confirm(`确定要彻底删除 ${name} 的注册信息吗？`)) return;
         try {
           const res = await fetch(`${API_BASE}/faces/${name}`, {
             method: "DELETE",

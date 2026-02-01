@@ -12,16 +12,18 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # 模型配置 (Model Configuration)
 # ============================================================================
 
+# 模型目录
+# Models directory
+MODELS_ROOT = os.path.join(PROJECT_ROOT, "models")
+
 # ArcFace 识别模型路径 (用于特征提取)
 # ArcFace recognition model path (for feature extraction)
-ARCFACE_MODEL_PATH = os.path.join(PROJECT_ROOT, "models", "buffalo_l", "r100_glint.onnx")
+ARCFACE_MODEL_PATH = os.path.join(MODELS_ROOT, "buffalo_l", "r100_glint.onnx")
 
 # ONNX Runtime 执行提供者 (优先级顺序)
 # ONNX Runtime execution providers (priority order)
 PROVIDERS = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 
-# 注意: RetinaFace 检测模型 (ResNet50 backbone) 会自动下载到 ~/.deepface/weights/
-# Note: RetinaFace detection model (ResNet50 backbone) will be auto-downloaded to ~/.deepface/weights/
 
 # ============================================================================
 # 数据配置 (Data Configuration)

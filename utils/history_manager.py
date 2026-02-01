@@ -33,6 +33,7 @@ class HistoryManager:
         """初始化 SQLite 数据库表架构"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            # 创建表
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS recognition_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,13 +43,26 @@ class HistoryManager:
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # 添加索引以优化查询
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_name ON recognition_history(person_name)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_timestamp ON recognition_history(timestamp)')
             conn.commit()
 
-    def add_history_record(self, name: str, confidence: float, face_img: np.ndarray) -> bool:
-        """添加历史记录"""
+    def add_history_record(self, name: str, confidence: float, face_img) -> bool:
+        """
+        添加历史记录
+        Args:
+            name: 姓名
+            confidence: 置信度
+            face_img: 可以是 np.ndarray (由 cv2 解码后的) 或者 bytes (原始 JPEG 字节)
+        """
         try:
-            _, img_encoded = cv2.imencode('.jpg', face_img)
-            img_blob = img_encoded.tobytes()
+            if isinstance(face_img, np.ndarray):
+                _, img_encoded = cv2.imencode('.jpg', face_img)
+                img_blob = img_encoded.tobytes()
+            else:
+                img_blob = face_img  # 假设已经是 bytes
+            
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('''
@@ -124,10 +138,35 @@ class HistoryManager:
                     item = dict(row)
                     if "face_image" in item:
                         del item["face_image"]
-                        if "id" in item:
-                            item["image_url"] = f"/api/history_image/{item['id']}"
+                    
+                    if "id" in item:
+                        item["image_url"] = f"/api/history_image/{item['id']}"
                     results.append(item)
         except Exception as e:
             print(f"HistoryManager: 执行查询失败: {e}")
             raise e
         return results
+
+    def cleanup_old_records(self, days: int = 30) -> int:
+        """
+        删除超过指定天数的历史记录
+        Args:
+            days: 保留的天数
+        Returns:
+            int: 删除的记录数量
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM recognition_history WHERE timestamp < datetime('now', ?)",
+                    (f'-{days} days',)
+                )
+                count = cursor.rowcount
+                conn.commit()
+                if count > 0:
+                    cursor.execute("VACUUM") # 压缩数据库文件
+                return count
+        except Exception as e:
+            print(f"HistoryManager: 清理历史失败: {e}")
+            return 0
