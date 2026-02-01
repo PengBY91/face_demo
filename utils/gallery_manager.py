@@ -50,7 +50,7 @@ class GalleryManager:
         self._init_db()
 
     def _init_db(self):
-        """初始化 SQLite 数据库表架构"""
+        """初始化 SQLite 数据库表架构 (仅包含人脸库)"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute('''
@@ -62,128 +62,76 @@ class GalleryManager:
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            # 彻底清理可能残留的历史表
+            cursor.execute("DROP TABLE IF EXISTS recognition_history")
             conn.commit()
 
     def add_person(self, name: str, face_img: np.ndarray, embedding: np.ndarray) -> bool:
-        """
-        添加人脸到库
-
-        Args:
-            name: 人名
-            face_img: 人脸图片 (numpy array)
-            embedding: 特征向量 (numpy array)
-
-        Returns:
-            是否成功添加
-        """
+        """添加人脸到库"""
         try:
-            # 将图片编码为 JPEG 字节流
             _, img_encoded = cv2.imencode('.jpg', face_img)
             img_blob = img_encoded.tobytes()
-
-            # 将特征向量转换为字节流
             emb_blob = embedding.astype(np.float32).tobytes()
 
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                # 使用 INSERT OR REPLACE 处理重名（覆盖）
                 cursor.execute('''
                     INSERT OR REPLACE INTO gallery (name, face_image, embedding, created_at)
                     VALUES (?, ?, ?, ?)
                 ''', (name, img_blob, emb_blob, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
                 conn.commit()
-
-            print(f"GalleryManager: 已在数据库中保存 {name}")
+            print(f"GalleryManager: 已在注册库中保存 {name}")
             return True
-
         except Exception as e:
             print(f"GalleryManager: 添加 {name} 失败: {e}")
             return False
 
     def delete_person(self, name: str) -> bool:
-        """
-        从库中删除人脸
-
-        Args:
-            name: 人名
-
-        Returns:
-            是否成功删除
-        """
+        """从库中删除人脸"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('DELETE FROM gallery WHERE name = ?', (name,))
                 if cursor.rowcount == 0:
-                    print(f"GalleryManager: {name} 不存在于库中")
                     return False
                 conn.commit()
-
-            print(f"GalleryManager: 已从数据库删除 {name}")
             return True
-
         except Exception as e:
             print(f"GalleryManager: 删除 {name} 失败: {e}")
             return False
 
     def rename_person(self, old_name: str, new_name: str) -> bool:
-        """
-        重命名人脸
-
-        Args:
-            old_name: 旧名字
-            new_name: 新名字
-
-        Returns:
-            是否成功重命名
-        """
+        """重命名人脸"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 cursor.execute('UPDATE gallery SET name = ? WHERE name = ?', (new_name, old_name))
                 if cursor.rowcount == 0:
-                    print(f"GalleryManager: {old_name} 不存在于库中")
                     return False
                 conn.commit()
-
-            print(f"GalleryManager: 已重命名 {old_name} -> {new_name}")
             return True
-
-        except sqlite3.IntegrityError:
-            print(f"GalleryManager: {new_name} 已存在")
-            return False
         except Exception as e:
             print(f"GalleryManager: 重命名失败: {e}")
             return False
 
     def list_all(self) -> Dict[str, Dict]:
-        """
-        列出所有人脸
-
-        Returns:
-            人脸元数据字典 {name: {created_at, ...}}
-        """
+        """列出所有人脸"""
         results = {}
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
-                cursor.execute('SELECT name, created_at FROM gallery')
+                cursor.execute('SELECT name, created_at, face_image FROM gallery')
                 for row in cursor.fetchall():
-                    results[row[0]] = {"created_at": row[1]}
+                    results[row[0]] = {
+                        "created_at": row[1],
+                        "face_image": row[2]
+                    }
         except Exception as e:
             print(f"GalleryManager: 获取列表失败: {e}")
         return results
 
     def get_person(self, name: str) -> Optional[Dict]:
-        """
-        获取单个人脸信息
-
-        Args:
-            name: 人名
-
-        Returns:
-            人脸元数据，如果不存在则返回 None
-        """
+        """获取单个人脸信息"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -196,15 +144,7 @@ class GalleryManager:
         return None
 
     def get_face_image(self, name: str) -> Optional[np.ndarray]:
-        """
-        从数据库获取人脸图片
-
-        Args:
-            name: 人名
-
-        Returns:
-            人脸图片 (numpy array)，如果不存在则返回 None
-        """
+        """从数据库获取人脸图片"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -218,24 +158,10 @@ class GalleryManager:
             print(f"GalleryManager: 获取图片失败: {e}")
         return None
 
-    def get_image_path(self, name: str) -> Optional[str]:
-        """
-        (兼容性保留) 原本返回路径，现在改为返回虚拟 API 或继续从旧路径加载 (迁移后应弃用)
-        Better: Web UI should call an API that returns image bytes.
-        """
-        # 暂时返回 None，后续可能需要 server.py 适配直接从数据库读取
-        return None
-
     def load_embeddings(self) -> Tuple[List[str], np.ndarray]:
-        """
-        加载所有人脸特征向量用于识别
-
-        Returns:
-            (names_list, embeddings_array)
-        """
+        """加载所有人脸特征向量用于识别"""
         names = []
         embeddings = []
-
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -252,8 +178,6 @@ class GalleryManager:
             return [], np.empty((0, 512))
 
         embeddings_array = np.array(embeddings, dtype=np.float32)
-        print(f"GalleryManager: 已从数据库加载 {len(names)} 个人脸特征")
-
         return names, embeddings_array
 
     def find_duplicate(self, embedding: np.ndarray, threshold: float = 0.7) -> Optional[Tuple[str, float]]:
@@ -288,20 +212,3 @@ class GalleryManager:
         
         return None
 
-    @staticmethod
-    def _sanitize_filename(name: str) -> str:
-        """
-        清理文件名，移除非法字符
-
-        Args:
-            name: 原始名字
-
-        Returns:
-            安全的文件名
-        """
-        # 替换非法字符为下划线
-        invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|']
-        safe_name = name
-        for char in invalid_chars:
-            safe_name = safe_name.replace(char, '_')
-        return safe_name

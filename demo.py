@@ -3,16 +3,75 @@ import numpy as np
 import os
 import threading
 import time
+import requests
 from sklearn.metrics.pairwise import cosine_similarity
 
 # 导入新模块
 from config import (
     ARCFACE_MODEL_PATH, PROVIDERS,
     GALLERY_DIR, DET_THRESH,
-    VIDEO_PATH, SIMILARITY_THRESHOLD, SYNC_INTERVAL
+    VIDEO_PATH, CAMERA_ID, USE_CAMERA,
+    SIMILARITY_THRESHOLD, SYNC_INTERVAL,
+    SERVER_HOST, SERVER_PORT
 )
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
+
+
+class HistorySampler:
+    """
+    10帧采样器：每隔10帧保存一个周期内识别出的每个人的最好结果（置信度最高）
+    """
+    def __init__(self, server_url="http://127.0.0.1:8008"):
+        self.server_url = server_url
+        self.frame_count = 0
+        self.window_size = 10
+        # 缓存当前窗口内的最佳结果 {name: {"score": score, "image": image}}
+        self.best_results = {}
+
+    def process_frame(self, detections):
+        """
+        detections: List[Dict] with 'name', 'score', 'aligned_face'
+        """
+        self.frame_count += 1
+        
+        for det in detections:
+            name = det['name']
+            if name == "Unknown":
+                continue
+            
+            score = det['score']
+            if name not in self.best_results or score > self.best_results[name]['score']:
+                self.best_results[name] = {
+                    "score": score,
+                    "image": det['aligned_face'].copy()
+                }
+        
+        # 周期结束，上报并清空
+        if self.frame_count >= self.window_size:
+            self._flush()
+            self.frame_count = 0
+            self.best_results = {}
+
+    def _flush(self):
+        for name, data in self.best_results.items():
+            try:
+                # 将图片转换为字节流
+                _, img_encoded = cv2.imencode('.jpg', data['image'])
+                files = {
+                    'file': ('face.jpg', img_encoded.tobytes(), 'image/jpeg')
+                }
+                payload = {
+                    'name': name,
+                    'confidence': data['score']
+                }
+                resp = requests.post(f"{self.server_url}/api/record_v2", data=payload, files=files)
+                if resp.status_code == 200:
+                    print(f"采样器: 已保存 {name} 的最佳结果 (score: {data['score']:.2f})")
+                else:
+                    print(f"采样器: 保存失败 {name}: {resp.text}")
+            except Exception as e:
+                print(f"采样器: 上报异常: {e}")
 
 
 class DemoClient:
@@ -36,7 +95,10 @@ class DemoClient:
         # 4. 加载本地人脸库
         self.load_gallery()
 
-        # 5. 启动后台同步线程
+        # 5. 初始化历史采样器
+        self.sampler = HistorySampler(server_url=f"http://{SERVER_HOST.replace('0.0.0.0', '127.0.0.1')}:{SERVER_PORT}")
+
+        # 6. 启动后台同步线程
         self.sync_thread = threading.Thread(target=self.sync_loop, daemon=True)
         self.sync_thread.start()
 
@@ -47,14 +109,9 @@ class DemoClient:
         names, embeddings = self.gallery.load_embeddings()
 
         if len(names) > 0:
+            # 特征库名字和向量
             self.feature_db_names = names
             self.feature_db_vectors = embeddings
-
-            # 加载对应的图片路径
-            self.feature_db_images = []
-            for name in names:
-                img_path = self.gallery.get_image_path(name)
-                self.feature_db_images.append(img_path)
 
             print(f"客户端: 成功加载 {len(names)} 个人脸特征")
         else:
@@ -82,13 +139,20 @@ class DemoClient:
         return "Unknown", best_score, None
 
     def run(self):
-        print(f"客户端: 正在打开视频文件 {VIDEO_PATH}...")
-        cap = cv2.VideoCapture(VIDEO_PATH)
+        if USE_CAMERA:
+            print(f"客户端: 正在打开摄像头 (ID: {CAMERA_ID})...")
+            cap = cv2.VideoCapture(CAMERA_ID)
+            source_name = "Camera"
+        else:
+            print(f"客户端: 正在打开视频文件 {VIDEO_PATH}...")
+            cap = cv2.VideoCapture(VIDEO_PATH)
+            source_name = f"Video ({VIDEO_PATH})"
+
         if not cap.isOpened():
-            print(f"客户端: 错误 - 无法打开视频文件 {VIDEO_PATH}")
+            print(f"客户端: 错误 - 无法打开 {source_name}")
             return
 
-        print("客户端: 开始测试，按 Q 退出")
+        print(f"客户端: 开始测试 ({source_name})，按 Q 退出")
         while True:
             ret, frame = cap.read()
             if not ret:
@@ -115,19 +179,25 @@ class DemoClient:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
                 # 显示匹配的照片
-                if gallery_img_path and os.path.exists(gallery_img_path):
-                    gallery_img = cv2.imread(gallery_img_path)
-                    if gallery_img is not None:
-                        gw = 120
-                        gh = int(gallery_img.shape[0] * (gw / gallery_img.shape[1]))
-                        gallery_img = cv2.resize(gallery_img, (gw, gh))
-                        pos_x, pos_y = display_frame.shape[1] - gw - 10, 10 + i * (gh + 30)
+                gallery_img = self.gallery.get_face_image(name)
+                if gallery_img is not None:
+                    gw = 120
+                    gh = int(gallery_img.shape[0] * (gw / gallery_img.shape[1]))
+                    gallery_img = cv2.resize(gallery_img, (gw, gh))
+                    pos_x, pos_y = display_frame.shape[1] - gw - 10, 10 + i * (gh + 30)
 
-                        if pos_y + gh < display_frame.shape[0]:
-                            cv2.putText(display_frame, f"Match: {name}", (pos_x, pos_y - 5),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                            display_frame[pos_y:pos_y + gh, pos_x:pos_x + gw] = gallery_img
-                            cv2.rectangle(display_frame, (pos_x, pos_y), (pos_x + gw, pos_y + gh), (0, 255, 0), 2)
+                    if pos_y + gh < display_frame.shape[0]:
+                        cv2.putText(display_frame, f"Match: {name}", (pos_x, pos_y - 5),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        display_frame[pos_y:pos_y + gh, pos_x:pos_x + gw] = gallery_img
+                        cv2.rectangle(display_frame, (pos_x, pos_y), (pos_x + gw, pos_y + gh), (0, 255, 0), 2)
+
+                # 记录检测结果用于采样
+                face['name'] = name
+                face['score'] = score
+
+            # 采样处理
+            self.sampler.process_frame(faces)
 
             cv2.imshow('Face Recognition Demo', display_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):

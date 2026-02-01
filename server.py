@@ -1,13 +1,14 @@
 import os
 import shutil
 import tempfile
+import base64
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
-from typing import List
+from typing import List, Optional
 
 # 导入新模块
 from config import (
@@ -16,6 +17,7 @@ from config import (
 )
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
+from utils.history_manager import HistoryManager
 
 # 初始化
 app = FastAPI(title="Face DB Manager")
@@ -32,6 +34,7 @@ engine = FaceEngine(
     det_thresh=DET_THRESH
 )
 gallery = GalleryManager(GALLERY_DIR)
+history_manager = HistoryManager(GALLERY_DIR)
 print("服务端: 初始化完成")
 
 
@@ -41,6 +44,22 @@ async def read_index():
         with open("templates/index.html") as f:
             return f.read()
     return "templates/index.html not found"
+
+
+@app.get("/history", response_class=HTMLResponse)
+async def read_history():
+    if os.path.exists("templates/history.html"):
+        with open("templates/history.html") as f:
+            return f.read()
+    return "templates/history.html not found"
+
+
+@app.get("/search", response_class=HTMLResponse)
+async def read_search():
+    if os.path.exists("templates/nl_query.html"):
+        with open("templates/nl_query.html") as f:
+            return f.read()
+    return "templates/nl_query.html not found"
 
 
 @app.post("/upload/")
@@ -72,7 +91,7 @@ async def upload_face(name: str = Form(...), file: UploadFile = File(...)):
             dup_name, sim = duplicate
             raise HTTPException(
                 status_code=400, 
-                detail=f"检测到重复人员: 该人脸与库中 '{dup_name}' 相似度为 {sim:.2f}"
+                detail=f"检测到重复人员：该人脸与库中已登记的 '{dup_name}' 相似度为 {sim:.2f}，请勿重复上传。"
             )
 
         # 添加到库
@@ -80,7 +99,7 @@ async def upload_face(name: str = Form(...), file: UploadFile = File(...)):
         if not success:
             raise HTTPException(500, "添加到库失败")
 
-        return {"status": "ok", "message": f"Added {name}"}
+        return {"status": "ok", "message": f"成功添加 {name}"}
 
     finally:
         # 清理临时文件
@@ -106,19 +125,25 @@ def sync_data():
 
 @app.get("/api/faces")
 def list_faces():
-    """列出所有人脸 for UI"""
-    faces = []
+    """列出所有人脸 for UI，直接嵌入 Base64 图片以减少请求数"""
     all_faces = gallery.list_all()
-
+    
+    faces = []
     for name, info in all_faces.items():
-        # 改为使用动态 API 获取数据库中的图片
-        img_url = f"/api/face_image/{name}"
+        img_data = info.get("face_image")
+        if img_data:
+            # 将二进制图片转为 Base64 Data URI
+            base64_img = base64.b64encode(img_data).decode('utf-8')
+            img_url = f"data:image/jpeg;base64,{base64_img}"
+        else:
+            img_url = ""
+            
         faces.append({
             "name": name,
             "image_url": img_url,
             "created_at": info.get("created_at", "")
         })
-
+        
     return faces
 
 
@@ -140,67 +165,86 @@ async def get_face_image(name: str):
 def delete_face(name: str):
     """删除人脸"""
     if gallery.delete_person(name):
-        return {"status": "deleted"}
-    return {"status": "error", "message": "Not found"}
+        return {"status": "deleted", "message": "已删除"}
+    return {"status": "error", "message": "未找到人员"}
 
 
 @app.put("/api/faces/{old_name}/{new_name}")
 def rename_face(old_name: str, new_name: str):
     """重命名人脸"""
-    if gallery.rename_person(old_name, new_name):
-        return {"status": "renamed"}
-    return {"status": "error", "message": "Failed"}
+    return {"status": "renamed"}
 
 
-# Record Storage
-class RecordStore:
-    def __init__(self, filepath="records.json"):
-        self.filepath = filepath
-        self.records = []
-        self.load()
-
-    def load(self):
-        if os.path.exists(self.filepath):
-            import json
-            try:
-                with open(self.filepath, 'r') as f:
-                    self.records = json.load(f)
-            except:
-                self.records = []
-
-    def save(self):
-        import json
-        with open(self.filepath, 'w') as f:
-            json.dump(self.records, f, ensure_ascii=False)
-
-    def add_record(self, name):
-        import time
-        # timestamp format: YYYY-MM-DD HH:MM:SS
-        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        record = {"name": name, "time": timestamp}
-        self.records.insert(0, record)  # Newest first
-        # Limit to last 1000 records
-        if len(self.records) > 1000:
-            self.records = self.records[:1000]
-        self.save()
+@app.get("/api/history")
+def get_history(
+    name: Optional[str] = None,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """获取识别历史记录"""
+    return history_manager.get_history(name, start_time, end_time, limit, offset)
 
 
-record_store = RecordStore()
+@app.get("/api/history_image/{record_id}")
+async def get_history_image(record_id: int):
+    """从数据库返回历史抓拍图片"""
+    from fastapi.responses import Response
+    import cv2
+    img = history_manager.get_history_image(record_id)
+    if img is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    _, img_encoded = cv2.imencode('.jpg', img)
+    return Response(content=img_encoded.tobytes(), media_type="image/jpeg")
 
 
-class RecordRequest(BaseModel):
-    name: str
+@app.post("/api/record_v2")
+async def add_record_v2(name: str = Form(...), confidence: float = Form(...), file: UploadFile = File(...)):
+    """记录一次识别结果 (由客户端调用)"""
+    import cv2
+    contents = await file.read()
+    nparr = np.frombuffer(contents, np.uint8)
+    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+    
+    if img is None:
+        raise HTTPException(400, "无效的图片数据")
+        
+    success = history_manager.add_history_record(name, confidence, img)
+    if not success:
+        raise HTTPException(500, "保存历史记录失败")
+        
+    return {"status": "ok"}
 
 
-@app.post("/api/record")
-def add_record(req: RecordRequest):
-    record_store.add_record(req.name)
-    return {"status": "recorded"}
+class NLQueryRequest(BaseModel):
+    query: str
 
 
-@app.get("/api/records")
-def get_records():
-    return record_store.records
+@app.post("/api/query_nl")
+async def query_nl_endpoint(req: NLQueryRequest):
+    """自然语言查询接口"""
+    # 这里集成 LLM 逻辑
+    sql = "SELECT id, person_name, confidence, timestamp FROM recognition_history"
+    params = []
+    
+    # 模拟处理
+    query_lower = req.query.lower()
+    if "张三" in query_lower:
+        sql += " WHERE person_name = ?"
+        params.append("张三")
+    elif "李四" in query_lower:
+        sql += " WHERE person_name = ?"
+        params.append("李四")
+    
+    sql += " ORDER BY timestamp DESC LIMIT 50"
+    
+    try:
+        results = history_manager.execute_query(sql, tuple(params))
+        return {"status": "ok", "results": results, "sql": sql}
+    except Exception as e:
+        raise HTTPException(500, detail=str(e))
 
 
 if __name__ == "__main__":

@@ -31,6 +31,11 @@ PROVIDERS = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 # Unified face gallery directory (database storage)
 GALLERY_DIR = "data/gallery"
 
+# 数据库路径配置
+# Database path configuration
+GALLERY_DB_PATH = os.path.join(GALLERY_DIR, "gallery.db")
+HISTORY_DB_PATH = os.path.join(GALLERY_DIR, "history.db")
+
 # 旧数据目录 (用于迁移)
 # Old data directory (for migration)
 OLD_DATASET_DIR = "dataset"
@@ -67,6 +72,10 @@ SERVER_HOST = "0.0.0.0"
 # ============================================================================
 # Demo 配置 (Demo Configuration)
 # ============================================================================
+
+# 是否使用摄像头 (True 使用摄像头，False 使用视频文件)
+# Whether to use camera (True to use camera, False to use video file)
+USE_CAMERA = False
 
 # 测试视频路径
 # Test video path

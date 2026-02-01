@@ -1,40 +1,73 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Face Demo Management</title>
+    <title>人脸识别管理系统</title>
     <link
       href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css"
       rel="stylesheet"
     />
     <style>
+      :root {
+        --primary-color: #4a90e2;
+        --bg-color: #f4f7f6;
+      }
+      body {
+        background-color: var(--bg-color);
+        font-family:
+          "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI",
+          Tahoma, Geneva, Verdana, sans-serif;
+      }
+      .navbar {
+        background: rgba(255, 255, 255, 0.8);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+      }
       .person-card {
         margin-bottom: 20px;
+        transition: transform 0.2s;
+        border: none;
+        border-radius: 12px;
+        overflow: hidden;
+      }
+      .person-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
       }
       .person-img {
         width: 100%;
         height: 200px;
         object-fit: cover;
-        border-radius: 5px;
       }
     </style>
   </head>
-  <body class="bg-light">
+  <body>
+    <nav class="navbar navbar-expand-lg navbar-light sticky-top">
+      <div class="container">
+        <a class="navbar-brand fw-bold" href="/">FaceEye</a>
+        <div class="navbar-nav">
+          <a class="nav-link active" href="/">人员管理</a>
+          <a class="nav-link" href="/history">识别历史</a>
+          <a class="nav-link" href="/search">AI 检索</a>
+        </div>
+      </div>
+    </nav>
+
     <div class="container py-5">
-      <h1 class="mb-4 text-center">Face Recognition Management</h1>
+      <h1 class="mb-4 text-center">人脸识别管理系统</h1>
 
       <!-- Add New Person -->
       <div class="card mb-5 shadow-sm">
         <div class="card-body">
-          <h5 class="card-title">Add New Person</h5>
+          <h5 class="card-title">注册新人员</h5>
           <form id="addForm" class="row g-3">
             <div class="col-md-4">
               <input
                 type="text"
                 class="form-control"
                 id="uName"
-                placeholder="Name"
+                placeholder="姓名"
                 required
               />
             </div>
@@ -49,7 +82,7 @@
             </div>
             <div class="col-md-4">
               <button type="submit" class="btn btn-primary w-100">
-                Upload & Train
+                上传并注册
               </button>
             </div>
           </form>
@@ -67,7 +100,7 @@
       <div class="modal-dialog">
         <div class="modal-content">
           <div class="modal-header">
-            <h5 class="modal-title">Rename Person</h5>
+            <h5 class="modal-title">重命名</h5>
             <button
               type="button"
               class="btn-close"
@@ -77,7 +110,7 @@
           <div class="modal-body">
             <input type="hidden" id="oldName" />
             <div class="mb-3">
-              <label class="form-label">New Name</label>
+              <label class="form-label">新姓名</label>
               <input type="text" class="form-control" id="newName" />
             </div>
           </div>
@@ -87,14 +120,14 @@
               class="btn btn-secondary"
               data-bs-dismiss="modal"
             >
-              Cancel
+              取消
             </button>
             <button
               type="button"
               class="btn btn-primary"
               onclick="confirmRename()"
             >
-              Save changes
+              保存修改
             </button>
           </div>
         </div>
@@ -118,8 +151,8 @@
                         <img src="${p.image_url}" class="card-img-top person-img" alt="${p.name}">
                         <div class="card-body text-center">
                             <h5 class="card-title">${p.name}</h5>
-                            <button class="btn btn-sm btn-outline-secondary me-2" onclick="openRename('${p.name}')">Rename</button>
-                            <button class="btn btn-sm btn-outline-danger" onclick="deletePerson('${p.name}')">Delete</button>
+                            <button class="btn btn-sm btn-outline-secondary me-2" onclick="openRename('${p.name}')">编辑姓名</button>
+                            <button class="btn btn-sm btn-outline-danger" onclick="deletePerson('${p.name}')">删除</button>
                         </div>
                     </div>
                 </div>
@@ -142,28 +175,30 @@
               method: "POST",
               body: formData,
             });
+            const result = await res.json();
             if (res.ok) {
-              alert("Added successfully!");
+              alert("添加成功！");
               document.getElementById("addForm").reset();
               loadPeople();
             } else {
-              alert("Upload failed");
+              const errorMsg = result.detail || "上传失败";
+              alert("错误: " + errorMsg);
             }
           } catch (err) {
             console.error(err);
-            alert("Error adding person");
+            alert("错误: 连接失败或服务器错误");
           }
         });
 
       // Delete Person
       async function deletePerson(name) {
-        if (!confirm(`Are you sure you want to delete ${name}?`)) return;
+        if (!confirm(`确定要删除 ${name} 吗？`)) return;
         try {
           const res = await fetch(`${API_BASE}/faces/${name}`, {
             method: "DELETE",
           });
           if (res.ok) loadPeople();
-          else alert("Delete failed");
+          else alert("删除失败");
         } catch (err) {
           console.error(err);
         }
@@ -192,7 +227,7 @@
             renameModal.hide();
             loadPeople();
           } else {
-            alert("Rename failed (Name might already exist)");
+            alert("重命名失败（名称可能已存在）");
           }
         } catch (err) {
           console.error(err);
