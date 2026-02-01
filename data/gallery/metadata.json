@@ -1,0 +1,57 @@
+{
+  "1": {
+    "image": "1.jpg",
+    "embedding": "1.npy",
+    "created_at": "2026-02-01 22:00:24"
+  },
+  "10": {
+    "image": "10.jpg",
+    "embedding": "10.npy",
+    "created_at": "2026-02-01 22:00:26"
+  },
+  "11": {
+    "image": "11.jpg",
+    "embedding": "11.npy",
+    "created_at": "2026-02-01 22:00:29"
+  },
+  "2": {
+    "image": "2.jpg",
+    "embedding": "2.npy",
+    "created_at": "2026-02-01 22:00:32"
+  },
+  "3": {
+    "image": "3.jpg",
+    "embedding": "3.npy",
+    "created_at": "2026-02-01 22:00:33"
+  },
+  "4": {
+    "image": "4.jpg",
+    "embedding": "4.npy",
+    "created_at": "2026-02-01 22:00:35"
+  },
+  "5": {
+    "image": "5.jpg",
+    "embedding": "5.npy",
+    "created_at": "2026-02-01 22:00:36"
+  },
+  "6": {
+    "image": "6.jpg",
+    "embedding": "6.npy",
+    "created_at": "2026-02-01 22:00:38"
+  },
+  "7": {
+    "image": "7.jpg",
+    "embedding": "7.npy",
+    "created_at": "2026-02-01 22:00:40"
+  },
+  "8": {
+    "image": "8.jpg",
+    "embedding": "8.npy",
+    "created_at": "2026-02-01 22:00:42"
+  },
+  "9": {
+    "image": "9.jpg",
+    "embedding": "9.npy",
+    "created_at": "2026-02-01 22:00:43"
+  }
+}

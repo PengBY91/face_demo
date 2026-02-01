@@ -1,0 +1,60 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.msgpack
+*.npy
+
+# === Virtual Environment ===
+venv/
+env/
+ENV/
+.venv/
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# === Project Specific: Models ===
+# Ignore large model weights by default
+models/*.onnx
+models/buffalo_l/*.onnx
+# If you want to track specific models, use !pattern
+# !models/specific_model.onnx
+
+# === Project Specific: Data ===
+# Ignore all gallery images and embeddings
+data/gallery/*.jpg
+data/gallery/*.png
+data/gallery/*.npy
+# Keep metadata but ignore actual biometric data if needed
+# data/gallery/metadata.json
+
+# Ignore test data and other datasets
+data/测试数据/
+data/distractors/
+dataset/
+
+# === Logs and Temps ===
+*.log
+*.tmp
+records.json
+diagnose_*.jpg
+diag_*.jpg
+
+# === System ===
+.DS_Store
+Thumbs.db
+
+# === Testing ===
+.coverage
+htmlcov/
+.ipynb_checkpoints/
