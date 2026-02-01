@@ -20,9 +20,9 @@ from utils.gallery_manager import GalleryManager
 # 初始化
 app = FastAPI(title="Face DB Manager")
 
-# Mount static files to gallery directory
+# Mount static files to gallery directory (only for other static assets if any)
 os.makedirs(GALLERY_DIR, exist_ok=True)
-app.mount("/static", StaticFiles(directory=GALLERY_DIR), name="static")
+# app.mount("/static", StaticFiles(directory=GALLERY_DIR), name="static") # 禁用静态目录映射，改用 API 读取
 
 # 初始化人脸引擎和库管理器
 print("服务端: 正在初始化...")
@@ -66,6 +66,15 @@ async def upload_face(name: str = Form(...), file: UploadFile = File(...)):
         embedding = face['embedding']
         aligned_face = face['aligned_face']
 
+        # 重复检测 (Duplicate Detection)
+        duplicate = gallery.find_duplicate(embedding, threshold=0.7)
+        if duplicate:
+            dup_name, sim = duplicate
+            raise HTTPException(
+                status_code=400, 
+                detail=f"检测到重复人员: 该人脸与库中 '{dup_name}' 相似度为 {sim:.2f}"
+            )
+
         # 添加到库
         success = gallery.add_person(name, aligned_face, embedding)
         if not success:
@@ -102,7 +111,8 @@ def list_faces():
     all_faces = gallery.list_all()
 
     for name, info in all_faces.items():
-        img_url = f"/static/{info['image']}"
+        # 改为使用动态 API 获取数据库中的图片
+        img_url = f"/api/face_image/{name}"
         faces.append({
             "name": name,
             "image_url": img_url,
@@ -110,6 +120,20 @@ def list_faces():
         })
 
     return faces
+
+
+@app.get("/api/face_image/{name}")
+async def get_face_image(name: str):
+    """从数据库直接返回图片内容"""
+    from fastapi.responses import Response
+    import cv2
+    img = gallery.get_face_image(name)
+    if img is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # 转换为 JPEG 字节流
+    _, img_encoded = cv2.imencode('.jpg', img)
+    return Response(content=img_encoded.tobytes(), media_type="image/jpeg")
 
 
 @app.delete("/api/faces/{name}")

@@ -6,7 +6,6 @@ scikit-learn
 # Deep learning and face recognition
 onnxruntime
 insightface  # 仅用于 ArcFace 特征提取
-retina-face  # 人脸检测 (ResNet50 backbone)
 
 # Web server
 fastapi

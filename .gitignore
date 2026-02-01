@@ -42,6 +42,7 @@ data/gallery/*.npy
 data/测试数据/
 data/distractors/
 dataset/
+*.db
 
 # === Logs and Temps ===
 *.log

@@ -27,13 +27,9 @@ PROVIDERS = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 # 数据配置 (Data Configuration)
 # ============================================================================
 
-# 统一人脸库目录 (扁平化存储)
-# Unified face gallery directory (flat storage)
+# 统一人脸库目录 (数据库存储)
+# Unified face gallery directory (database storage)
 GALLERY_DIR = "data/gallery"
-
-# 元数据文件路径
-# Metadata file path
-METADATA_FILE = os.path.join(GALLERY_DIR, "metadata.json")
 
 # 旧数据目录 (用于迁移)
 # Old data directory (for migration)

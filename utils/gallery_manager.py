@@ -10,6 +10,8 @@ import json
 import numpy as np
 import shutil
 import cv2
+import sqlite3
+import io
 from typing import Dict, List, Tuple, Optional
 from datetime import datetime
 
@@ -18,25 +20,17 @@ class GalleryManager:
     """
     人脸库管理器
 
-    数据结构:
+    数据结构 (SQLite):
     data/gallery/
-    ├── metadata.json          # 元数据索引
-    ├── person1.jpg            # 人脸图片
-    ├── person1.npy            # 特征向量
-    ├── person2.jpg
-    ├── person2.npy
-    └── ...
+    ├── gallery.db             # SQLite 数据库 (包含元数据、图片和特征)
+    └── (旧文件将通过迁移脚本清理)
 
     Gallery Manager
 
-    Data structure:
+    Data structure (SQLite):
     data/gallery/
-    ├── metadata.json          # Metadata index
-    ├── person1.jpg            # Face images
-    ├── person1.npy            # Embeddings
-    ├── person2.jpg
-    ├── person2.npy
-    └── ...
+    ├── gallery.db             # SQLite database (contains metadata, images, and embeddings)
+    └── (Old files will be cleaned via migration script)
     """
 
     def __init__(self, gallery_dir: str):
@@ -47,37 +41,28 @@ class GalleryManager:
             gallery_dir: 人脸库目录路径
         """
         self.gallery_dir = gallery_dir
-        self.metadata_file = os.path.join(gallery_dir, "metadata.json")
+        self.db_path = os.path.join(gallery_dir, "gallery.db")
 
         # 确保目录存在
         os.makedirs(gallery_dir, exist_ok=True)
 
-        # 加载元数据
-        self.metadata = self._load_metadata()
+        # 初始化数据库
+        self._init_db()
 
-    def _load_metadata(self) -> Dict:
-        """
-        加载元数据文件
-
-        Returns:
-            元数据字典
-        """
-        if os.path.exists(self.metadata_file):
-            try:
-                with open(self.metadata_file, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception as e:
-                print(f"GalleryManager: 警告 - 无法加载元数据: {e}")
-                return {}
-        return {}
-
-    def _save_metadata(self):
-        """保存元数据到文件"""
-        try:
-            with open(self.metadata_file, 'w', encoding='utf-8') as f:
-                json.dump(self.metadata, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"GalleryManager: 错误 - 无法保存元数据: {e}")
+    def _init_db(self):
+        """初始化 SQLite 数据库表架构"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS gallery (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT UNIQUE NOT NULL,
+                    face_image BLOB,
+                    embedding BLOB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
 
     def add_person(self, name: str, face_img: np.ndarray, embedding: np.ndarray) -> bool:
         """
@@ -92,37 +77,23 @@ class GalleryManager:
             是否成功添加
         """
         try:
-            # 生成唯一文件名 (处理重名情况)
-            base_name = self._sanitize_filename(name)
-            counter = 1
-            final_name = base_name
+            # 将图片编码为 JPEG 字节流
+            _, img_encoded = cv2.imencode('.jpg', face_img)
+            img_blob = img_encoded.tobytes()
 
-            while final_name in self.metadata:
-                final_name = f"{base_name}_{counter:03d}"
-                counter += 1
+            # 将特征向量转换为字节流
+            emb_blob = embedding.astype(np.float32).tobytes()
 
-            # 文件路径
-            image_filename = f"{final_name}.jpg"
-            embedding_filename = f"{final_name}.npy"
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                # 使用 INSERT OR REPLACE 处理重名（覆盖）
+                cursor.execute('''
+                    INSERT OR REPLACE INTO gallery (name, face_image, embedding, created_at)
+                    VALUES (?, ?, ?, ?)
+                ''', (name, img_blob, emb_blob, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+                conn.commit()
 
-            dest_image_path = os.path.join(self.gallery_dir, image_filename)
-            dest_embedding_path = os.path.join(self.gallery_dir, embedding_filename)
-
-            # 保存图片 (对齐后的人脸)
-            cv2.imwrite(dest_image_path, face_img)
-
-            # 保存特征向量
-            np.save(dest_embedding_path, embedding)
-
-            # 更新元数据
-            self.metadata[name] = {
-                "image": image_filename,
-                "embedding": embedding_filename,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            self._save_metadata()
-
-            print(f"GalleryManager: 已添加 {name} (文件: {final_name})")
+            print(f"GalleryManager: 已在数据库中保存 {name}")
             return True
 
         except Exception as e:
@@ -139,25 +110,16 @@ class GalleryManager:
         Returns:
             是否成功删除
         """
-        if name not in self.metadata:
-            print(f"GalleryManager: {name} 不存在于库中")
-            return False
-
         try:
-            # 删除文件
-            image_file = os.path.join(self.gallery_dir, self.metadata[name]["image"])
-            embedding_file = os.path.join(self.gallery_dir, self.metadata[name]["embedding"])
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM gallery WHERE name = ?', (name,))
+                if cursor.rowcount == 0:
+                    print(f"GalleryManager: {name} 不存在于库中")
+                    return False
+                conn.commit()
 
-            if os.path.exists(image_file):
-                os.remove(image_file)
-            if os.path.exists(embedding_file):
-                os.remove(embedding_file)
-
-            # 更新元数据
-            del self.metadata[name]
-            self._save_metadata()
-
-            print(f"GalleryManager: 已删除 {name}")
+            print(f"GalleryManager: 已从数据库删除 {name}")
             return True
 
         except Exception as e:
@@ -175,22 +137,21 @@ class GalleryManager:
         Returns:
             是否成功重命名
         """
-        if old_name not in self.metadata:
-            print(f"GalleryManager: {old_name} 不存在于库中")
-            return False
-
-        if new_name in self.metadata:
-            print(f"GalleryManager: {new_name} 已存在")
-            return False
-
         try:
-            # 更新元数据 (文件名不变，只改索引)
-            self.metadata[new_name] = self.metadata.pop(old_name)
-            self._save_metadata()
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('UPDATE gallery SET name = ? WHERE name = ?', (new_name, old_name))
+                if cursor.rowcount == 0:
+                    print(f"GalleryManager: {old_name} 不存在于库中")
+                    return False
+                conn.commit()
 
             print(f"GalleryManager: 已重命名 {old_name} -> {new_name}")
             return True
 
+        except sqlite3.IntegrityError:
+            print(f"GalleryManager: {new_name} 已存在")
+            return False
         except Exception as e:
             print(f"GalleryManager: 重命名失败: {e}")
             return False
@@ -200,9 +161,18 @@ class GalleryManager:
         列出所有人脸
 
         Returns:
-            人脸元数据字典 {name: metadata}
+            人脸元数据字典 {name: {created_at, ...}}
         """
-        return self.metadata.copy()
+        results = {}
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT name, created_at FROM gallery')
+                for row in cursor.fetchall():
+                    results[row[0]] = {"created_at": row[1]}
+        except Exception as e:
+            print(f"GalleryManager: 获取列表失败: {e}")
+        return results
 
     def get_person(self, name: str) -> Optional[Dict]:
         """
@@ -214,23 +184,47 @@ class GalleryManager:
         Returns:
             人脸元数据，如果不存在则返回 None
         """
-        return self.metadata.get(name)
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT created_at FROM gallery WHERE name = ?', (name,))
+                row = cursor.fetchone()
+                if row:
+                    return {"created_at": row[0]}
+        except Exception as e:
+            print(f"GalleryManager: 获取信息失败: {e}")
+        return None
 
-    def get_image_path(self, name: str) -> Optional[str]:
+    def get_face_image(self, name: str) -> Optional[np.ndarray]:
         """
-        获取人脸图片路径
+        从数据库获取人脸图片
 
         Args:
             name: 人名
 
         Returns:
-            图片绝对路径，如果不存在则返回 None
+            人脸图片 (numpy array)，如果不存在则返回 None
         """
-        if name not in self.metadata:
-            return None
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT face_image FROM gallery WHERE name = ?', (name,))
+                row = cursor.fetchone()
+                if row:
+                    img_bytes = row[0]
+                    nparr = np.frombuffer(img_bytes, np.uint8)
+                    return cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        except Exception as e:
+            print(f"GalleryManager: 获取图片失败: {e}")
+        return None
 
-        image_file = self.metadata[name]["image"]
-        return os.path.join(self.gallery_dir, image_file)
+    def get_image_path(self, name: str) -> Optional[str]:
+        """
+        (兼容性保留) 原本返回路径，现在改为返回虚拟 API 或继续从旧路径加载 (迁移后应弃用)
+        Better: Web UI should call an API that returns image bytes.
+        """
+        # 暂时返回 None，后续可能需要 server.py 适配直接从数据库读取
+        return None
 
     def load_embeddings(self) -> Tuple[List[str], np.ndarray]:
         """
@@ -238,29 +232,61 @@ class GalleryManager:
 
         Returns:
             (names_list, embeddings_array)
-            - names_list: 人名列表
-            - embeddings_array: 特征向量数组 (N, 512)
         """
         names = []
         embeddings = []
 
-        for name, info in self.metadata.items():
-            embedding_file = os.path.join(self.gallery_dir, info["embedding"])
-
-            try:
-                embedding = np.load(embedding_file)
-                embeddings.append(embedding)
-                names.append(name)
-            except Exception as e:
-                print(f"GalleryManager: 加载 {name} 的特征失败: {e}")
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT name, embedding FROM gallery')
+                for row in cursor.fetchall():
+                    name, emb_bytes = row
+                    embedding = np.frombuffer(emb_bytes, dtype=np.float32)
+                    embeddings.append(embedding)
+                    names.append(name)
+        except Exception as e:
+            print(f"GalleryManager: 加载特征向量失败: {e}")
 
         if len(embeddings) == 0:
             return [], np.empty((0, 512))
 
         embeddings_array = np.array(embeddings, dtype=np.float32)
-        print(f"GalleryManager: 已加载 {len(names)} 个人脸特征")
+        print(f"GalleryManager: 已从数据库加载 {len(names)} 个人脸特征")
 
         return names, embeddings_array
+
+    def find_duplicate(self, embedding: np.ndarray, threshold: float = 0.7) -> Optional[Tuple[str, float]]:
+        """
+        在库中寻找相似的人脸 (重复检测)
+
+        Args:
+            embedding: 待检测的特征向量
+            threshold: 相似度阈值 (默认 0.7)
+
+        Returns:
+            如果找到，返回 (name, similarity)，否则返回 None
+        """
+        names, gallery_embs = self.load_embeddings()
+        if len(names) == 0:
+            return None
+
+        # 计算余弦相似度
+        # Cosine similarity for normalized embeddings is just dot product
+        # Ensure embedding is normalized
+        norm_emb = embedding / np.linalg.norm(embedding)
+        # gallery_embs should already be normalized if they come from ArcFace
+        norms = np.linalg.norm(gallery_embs, axis=1, keepdims=True)
+        norm_gallery = gallery_embs / norms
+        
+        similarities = np.dot(norm_gallery, norm_emb)
+        max_idx = np.argmax(similarities)
+        max_sim = similarities[max_idx]
+
+        if max_sim >= threshold:
+            return names[max_idx], float(max_sim)
+        
+        return None
 
     @staticmethod
     def _sanitize_filename(name: str) -> str:
