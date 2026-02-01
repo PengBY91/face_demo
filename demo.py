@@ -90,7 +90,6 @@ class DemoClient:
         # 3. 本地特征库和照片路径
         self.feature_db_vectors = np.empty((0, 512))
         self.feature_db_names = []
-        self.feature_db_images = []
 
         # 4. 加载本地人脸库
         self.load_gallery()
@@ -134,7 +133,7 @@ class DemoClient:
         best_score = sims[best_idx]
 
         if best_score > SIMILARITY_THRESHOLD:
-            return self.feature_db_names[best_idx], best_score, self.feature_db_images[best_idx]
+            return self.feature_db_names[best_idx], best_score, None
 
         return "Unknown", best_score, None
 
