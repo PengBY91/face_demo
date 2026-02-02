@@ -129,7 +129,7 @@
         const start = document.getElementById("filterStart").value;
         const end = document.getElementById("filterEnd").value;
 
-        let url = `/api/history?limit=48`;
+        let url = `/api/history?limit=48&include_images=true`;
         if (name) url += `&name=${encodeURIComponent(name)}`;
         if (start) url += `&start_time=${start.replace("T", " ")}`;
         if (end) url += `&end_time=${end.replace("T", " ")}`;
@@ -153,11 +153,12 @@
 
           data.forEach((item, index) => {
             const delay = (index % 12) * 0.05;
+            const imgSrc = item.image_data || item.image_url;
             const card = `
                         <div class="col-xl-3 col-lg-4 col-sm-6 animate-fade-in" style="animation-delay: ${delay}s">
                             <div class="card h-100">
                                 <div class="position-relative">
-                                    <img src="${item.image_url}" class="card-img-top history-img" alt="${item.person_name}">
+                                    <img src="${imgSrc}" class="card-img-top history-img" alt="${item.person_name}">
                                     <div class="position-absolute top-0 end-0 m-2">
                                         <span class="confidence-badge">${(item.confidence * 100).toFixed(1)}%</span>
                                     </div>

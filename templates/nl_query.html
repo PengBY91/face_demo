@@ -218,10 +218,11 @@
 
             data.results.forEach((row, index) => {
               const delay = index * 0.05;
+              const imgSrc = row.image_data || row.image_url;
               const card = `
                         <div class="col-lg-10 animate-fade-in" style="animation-delay: ${delay}s">
                             <div class="card p-3 flex-row align-items-center gap-4">
-                                ${row.image_url ? `<img src="${row.image_url}" class="result-img shadow-sm">` : ""}
+                                ${imgSrc ? `<img src="${imgSrc}" class="result-img shadow-sm">` : ""}
                                 <div class="flex-grow-1">
                                     <div class="d-flex justify-content-between align-items-start">
                                         <h5 class="mb-1 fw-bold text-dark">${row.person_name}</h5>

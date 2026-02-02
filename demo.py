@@ -4,6 +4,7 @@ import os
 import threading
 import time
 import requests
+import base64
 from sklearn.metrics.pairwise import cosine_similarity
 
 # 导入新模块
@@ -54,24 +55,33 @@ class HistorySampler:
             self.best_results = {}
 
     def _flush(self):
+        if not self.best_results:
+            return
+            
+        records = []
         for name, data in self.best_results.items():
             try:
-                # 将图片转换为字节流
+                # 将图片转换为字节流并转为 base64
                 _, img_encoded = cv2.imencode('.jpg', data['image'])
-                files = {
-                    'file': ('face.jpg', img_encoded.tobytes(), 'image/jpeg')
-                }
-                payload = {
+                img_base64 = base64.b64encode(img_encoded.tobytes()).decode('utf-8')
+                
+                records.append({
                     'name': name,
-                    'confidence': data['score']
-                }
-                resp = requests.post(f"{self.server_url}/api/record_v2", data=payload, files=files)
-                if resp.status_code == 200:
-                    print(f"采样器: 已保存 {name} 的最佳结果 (score: {data['score']:.2f})")
-                else:
-                    print(f"采样器: 保存失败 {name}: {resp.text}")
+                    'confidence': float(data['score']),
+                    'image_b64': img_base64
+                })
             except Exception as e:
-                print(f"采样器: 上报异常: {e}")
+                print(f"采样器: 准备数据异常 {name}: {e}")
+
+        if records:
+            try:
+                resp = requests.post(f"{self.server_url}/api/records_batch", json=records)
+                if resp.status_code == 200:
+                    print(f"采样器: 已批量保存 {len(records)} 条识别结果")
+                else:
+                    print(f"采样器: 批量保存失败: {resp.text}")
+            except Exception as e:
+                print(f"采样器: 批量上报异常: {e}")
 
 
 class DemoClient:

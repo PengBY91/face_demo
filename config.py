@@ -21,6 +21,7 @@ MODELS_ROOT = os.path.join(PROJECT_ROOT, "models")
 ARCFACE_MODEL_PATH = os.path.join(MODELS_ROOT, "buffalo_l", "r100_glint.onnx")
 
 # ONNX Runtime 执行提供者 (优先级顺序)
+# 如果没有 GPU 或 CUDA 环境配置不正确，请将 'CPUExecutionProvider' 置于首位或仅保留它
 # ONNX Runtime execution providers (priority order)
 PROVIDERS = ['CUDAExecutionProvider', 'CPUExecutionProvider']
 

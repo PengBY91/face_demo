@@ -61,29 +61,33 @@ class FaceEngine:
             # 默认：寻找当前文件所在目录的上级目录下的 models
             models_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
         
+        # 加载 InsightFace 检测器 (仅启用 detection 模块)
         # InsightFace 的 root 参数应该是 models 目录所在的父目录
         models_parent = os.path.dirname(models_root)
         
+        print(f"FaceEngine: 正在加载检测器 (buffalo_l)...")
         try:
+            # name='buffalo_l' 会在 models_parent/models/buffalo_l 下寻找模型
             self.det_model = FaceAnalysis(name='buffalo_l', root=models_parent, allowed_modules=['detection'])
             self.det_model.prepare(ctx_id=ctx_id, det_size=det_size)
         except Exception as e:
-            print(f"FaceEngine: 初始化检测器失败: {e}")
-            print(f"请检查模型路径是否存在: {os.path.join(models_root, 'buffalo_l')}")
+            print(f"FaceEngine: 加载检测器失败: {e}")
+            print(f"请检查模型路径: {os.path.join(models_root, 'buffalo_l')}")
             raise e
 
         # 加载 ArcFace 识别模型
         if rec_model_path is None:
-            # 默认使用 buffalo_l 的识别模型
-            rec_model_path = os.path.join(
-                os.path.dirname(os.path.dirname(__file__)),
-                "models", "buffalo_l", "r100_glint.onnx"
-            )
+            rec_model_path = os.path.join(models_root, "buffalo_l", "r100_glint.onnx")
 
-        print(f"FaceEngine: 正在加载 ArcFace 模型 {rec_model_path}...")
-        self.rec_model = get_model(rec_model_path, providers=providers)
-        self.rec_model.prepare(ctx_id=ctx_id)
-        print("FaceEngine: 模型加载完成")
+        print(f"FaceEngine: 正在加载识别模型 (ArcFace)...")
+        try:
+            self.rec_model = get_model(rec_model_path, providers=providers)
+            self.rec_model.prepare(ctx_id=ctx_id)
+        except Exception as e:
+            print(f"FaceEngine: 加载识别模型失败: {e}")
+            raise e
+        
+        print("FaceEngine: 系统初始化完成")
 
     def detect_and_extract(self, img: np.ndarray) -> List[Dict]:
         """

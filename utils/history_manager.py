@@ -48,6 +48,41 @@ class HistoryManager:
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_timestamp ON recognition_history(timestamp)')
             conn.commit()
 
+    def add_history_records_batch(self, records: List[Dict]) -> bool:
+        """
+        批量添加历史记录
+        Args:
+            records: 列表，每个元素包含 {name, confidence, image_bytes}
+        """
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                
+                rows = []
+                for rec in records:
+                    name = rec['name']
+                    confidence = rec['confidence']
+                    face_img = rec['image'] # 应该是 bytes
+                    
+                    if isinstance(face_img, np.ndarray):
+                        _, img_encoded = cv2.imencode('.jpg', face_img)
+                        img_blob = img_encoded.tobytes()
+                    else:
+                        img_blob = face_img
+                    
+                    rows.append((name, confidence, img_blob, now_str))
+                
+                cursor.executemany('''
+                    INSERT INTO recognition_history (person_name, confidence, face_image, timestamp)
+                    VALUES (?, ?, ?, ?)
+                ''', rows)
+                conn.commit()
+            return True
+        except Exception as e:
+            print(f"HistoryManager: 批量保存历史失败: {e}")
+            return False
+
     def add_history_record(self, name: str, confidence: float, face_img) -> bool:
         """
         添加历史记录
@@ -76,9 +111,16 @@ class HistoryManager:
             return False
 
     def get_history(self, name: Optional[str] = None, start_time: Optional[str] = None, 
-                    end_time: Optional[str] = None, limit: int = 100, offset: int = 0) -> List[Dict]:
+                    end_time: Optional[str] = None, limit: int = 100, offset: int = 0,
+                    include_images: bool = False) -> List[Dict]:
         """查询历史记录"""
-        query = "SELECT id, person_name, confidence, timestamp FROM recognition_history WHERE 1=1"
+        import base64
+        
+        cols = "id, person_name, confidence, timestamp"
+        if include_images:
+            cols += ", face_image"
+            
+        query = f"SELECT {cols} FROM recognition_history WHERE 1=1"
         params = []
         if name:
             query += " AND person_name LIKE ?"
@@ -99,13 +141,19 @@ class HistoryManager:
                 cursor = conn.cursor()
                 cursor.execute(query, tuple(params))
                 for row in cursor.fetchall():
-                    results.append({
+                    item = {
                         "id": row[0],
                         "person_name": row[1],
                         "confidence": row[2],
                         "timestamp": row[3],
                         "image_url": f"/api/history_image/{row[0]}"
-                    })
+                    }
+                    if include_images and len(row) > 4:
+                        img_blob = row[4]
+                        if img_blob:
+                            base64_img = base64.b64encode(img_blob).decode('utf-8')
+                            item["image_data"] = f"data:image/jpeg;base64,{base64_img}"
+                    results.append(item)
         except Exception as e:
             print(f"HistoryManager: 查询历史失败: {e}")
         return results
@@ -137,6 +185,11 @@ class HistoryManager:
                 for row in cursor.fetchall():
                     item = dict(row)
                     if "face_image" in item:
+                        img_blob = item["face_image"]
+                        if img_blob:
+                            import base64
+                            base64_img = base64.b64encode(img_blob).decode('utf-8')
+                            item["image_data"] = f"data:image/jpeg;base64,{base64_img}"
                         del item["face_image"]
                     
                     if "id" in item:

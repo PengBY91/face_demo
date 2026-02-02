@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 import uvicorn
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 # 导入新模块
 from config import (
@@ -183,10 +183,11 @@ def get_history(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     limit: int = 100,
-    offset: int = 0
+    offset: int = 0,
+    include_images: bool = False
 ):
     """获取识别历史记录"""
-    return history_manager.get_history(name, start_time, end_time, limit, offset)
+    return history_manager.get_history(name, start_time, end_time, limit, offset, include_images)
 
 
 @app.get("/api/history_image/{record_id}")
@@ -200,6 +201,40 @@ async def get_history_image(record_id: int):
     
     _, img_encoded = cv2.imencode('.jpg', img)
     return Response(content=img_encoded.tobytes(), media_type="image/jpeg")
+
+
+@app.post("/api/records_batch")
+async def add_records_batch(records: List[Dict]):
+    """批量记录识别结果 (由客户端调用, 使用 JSON 格式包含 base64 图片)"""
+    try:
+        processed_records = []
+        for rec in records:
+            name = rec.get('name')
+            confidence = rec.get('confidence')
+            image_b64 = rec.get('image_b64')
+            
+            if image_b64:
+                # 去掉可能存在的 'data:image/jpeg;base64,' 前缀
+                if ',' in image_b64:
+                    image_b64 = image_b64.split(',')[1]
+                img_bytes = base64.b64decode(image_b64)
+            else:
+                img_bytes = b""
+                
+            processed_records.append({
+                'name': name,
+                'confidence': confidence,
+                'image': img_bytes
+            })
+            
+        success = history_manager.add_history_records_batch(processed_records)
+        if not success:
+            raise HTTPException(500, "批量保存历史记录失败")
+            
+        return {"status": "ok", "count": len(processed_records)}
+    except Exception as e:
+        print(f"服务端: 批量保存记录失败: {e}")
+        raise HTTPException(500, detail=str(e))
 
 
 @app.post("/api/record_v2")
@@ -228,7 +263,7 @@ class NLQueryRequest(BaseModel):
 async def query_nl_endpoint(req: NLQueryRequest):
     """自然语言查询接口"""
     # 这里集成 LLM 逻辑
-    sql = "SELECT id, person_name, confidence, timestamp FROM recognition_history"
+    sql = "SELECT id, person_name, confidence, timestamp, face_image FROM recognition_history"
     params = []
     
     # 模拟处理
