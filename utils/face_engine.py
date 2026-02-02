@@ -10,6 +10,11 @@ Unified interface for face detection, alignment, and feature extraction
 """
 import numpy as np
 import cv2
+import warnings
+
+# Suppress ONNX Runtime warning for Windows Server 2022
+warnings.filterwarnings('ignore', category=UserWarning, message='.*Unsupported Windows version.*')
+
 from insightface.app import FaceAnalysis
 from insightface.model_zoo import get_model
 from insightface.utils import face_align

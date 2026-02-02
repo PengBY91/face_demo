@@ -4,7 +4,10 @@ numpy<2.0
 scikit-learn
 
 # Deep learning and face recognition
-onnxruntime
+# Deep learning and face recognition
+# USE EITHER onnxruntime (CPU) OR onnxruntime-gpu (GPU). Do not install both.
+# onnxruntime
+onnxruntime-gpu
 insightface  # 仅用于 ArcFace 特征提取
 
 # Web server
@@ -13,4 +16,5 @@ uvicorn
 python-multipart
 
 # Optional: GPU support (uncomment if using CUDA)
-# onnxruntime-gpu
+# The onnxruntime-gpu package is now handled above.
+# # onnxruntime-gpu
