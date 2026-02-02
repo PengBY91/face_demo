@@ -1,6 +1,6 @@
 # Core dependencies
 opencv-python
-numpy
+numpy<2.0
 scikit-learn
 
 # Deep learning and face recognition

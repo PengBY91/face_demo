@@ -15,6 +15,7 @@ from insightface.model_zoo import get_model
 from insightface.utils import face_align
 from typing import List, Dict, Optional, Tuple
 import os
+from utils.cv_utils import imread_unicode
 
 
 class FaceEngine:
@@ -52,13 +53,24 @@ class FaceEngine:
 
         # 加载 InsightFace 检测器 (使用 buffalo_l 模型包)
         print(f"FaceEngine: 正在初始化 InsightFace 检测器 (buffalo_l, ctx_id={ctx_id})...")
-        # 如果 rec_model_path 为空，使用默认路径
-        models_root = os.path.dirname(os.path.dirname(rec_model_path)) if rec_model_path else os.path.join(os.path.dirname(os.path.dirname(__file__)), "models")
         
-        # models_parent 是 models 目录所在的父目录，FaceAnalysis 会在该目录下寻找 models/<name>
+        # 自动定位 models 目录
+        if rec_model_path:
+            models_root = os.path.dirname(os.path.dirname(rec_model_path))
+        else:
+            # 默认：寻找当前文件所在目录的上级目录下的 models
+            models_root = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "models")
+        
+        # InsightFace 的 root 参数应该是 models 目录所在的父目录
         models_parent = os.path.dirname(models_root)
-        self.det_model = FaceAnalysis(name='buffalo_l', root=models_parent, allowed_modules=['detection'])
-        self.det_model.prepare(ctx_id=ctx_id, det_size=det_size)
+        
+        try:
+            self.det_model = FaceAnalysis(name='buffalo_l', root=models_parent, allowed_modules=['detection'])
+            self.det_model.prepare(ctx_id=ctx_id, det_size=det_size)
+        except Exception as e:
+            print(f"FaceEngine: 初始化检测器失败: {e}")
+            print(f"请检查模型路径是否存在: {os.path.join(models_root, 'buffalo_l')}")
+            raise e
 
         # 加载 ArcFace 识别模型
         if rec_model_path is None:
@@ -165,7 +177,8 @@ class FaceEngine:
             512维特征向量，如果失败则返回 None
             512-dim embedding vector, or None if failed
         """
-        img = cv2.imread(img_path)
+        # 使用支持中文路径的读取方法
+        img = imread_unicode(img_path)
         if img is None:
             return None
 

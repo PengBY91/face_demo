@@ -13,6 +13,7 @@ from config import (
 )
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
+from utils.cv_utils import imread_unicode
 
 
 def main():
@@ -42,8 +43,8 @@ def main():
 
         print(f"处理: {filename} -> {name}")
 
-        # 读取图片
-        img = cv2.imread(source_path)
+        # 读取图片 (支持中文路径)
+        img = imread_unicode(source_path)
         if img is None:
             print(f"  警告: 无法读取图片 {filename}")
             continue
