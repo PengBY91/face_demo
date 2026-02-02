@@ -11,15 +11,51 @@ Unified interface for face detection, alignment, and feature extraction
 import numpy as np
 import cv2
 import warnings
+import sys
+import os
+import glob as globmod
 
 # Suppress ONNX Runtime warning for Windows Server 2022
 warnings.filterwarnings('ignore', category=UserWarning, message='.*Unsupported Windows version.*')
 
+# 在 Windows 上，将 CUDA Toolkit 和 cuDNN 的 DLL 目录加入搜索路径
+# 必须在 import onnxruntime 之前完成
+if sys.platform == 'win32':
+    _cuda_dirs = []
+    _cuda_major = None
+    # CUDA Toolkit
+    _cuda_path = os.environ.get('CUDA_PATH', '')
+    if _cuda_path and os.path.isdir(os.path.join(_cuda_path, 'bin')):
+        _cuda_dirs.append(os.path.join(_cuda_path, 'bin'))
+        # 从路径提取 CUDA 主版本号 (例如 v12.8 -> "12")
+        _ver_part = os.path.basename(_cuda_path)  # "v12.8"
+        if _ver_part.startswith('v'):
+            _cuda_major = _ver_part[1:].split('.')[0]
+    else:
+        # 搜索常见安装路径，取最高 CUDA 12.x 版本
+        _toolkit_dirs = sorted(globmod.glob(r'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12*\bin'))
+        if _toolkit_dirs:
+            _cuda_dirs.append(_toolkit_dirs[-1])
+            _cuda_major = '12'
+    # cuDNN - 仅加载与 CUDA 主版本匹配的目录
+    _cudnn_path = os.environ.get('CUDNN_PATH', '')
+    if _cudnn_path and os.path.isdir(_cudnn_path):
+        _cuda_dirs.append(_cudnn_path)
+    elif _cuda_major:
+        # 匹配 cuDNN bin 子目录，如 v9.0\bin\12.3 中的 "12" 匹配 CUDA 12
+        for _p in sorted(globmod.glob(rf'C:\Program Files\NVIDIA\CUDNN\v*\bin\{_cuda_major}.*')):
+            if os.path.isdir(_p):
+                _cuda_dirs.append(_p)
+    # 注册 DLL 搜索目录
+    for _d in _cuda_dirs:
+        os.add_dll_directory(_d)
+        os.environ['PATH'] = _d + os.pathsep + os.environ.get('PATH', '')
+
+import onnxruntime as ort
 from insightface.app import FaceAnalysis
 from insightface.model_zoo import get_model
 from insightface.utils import face_align
 from typing import List, Dict, Optional, Tuple
-import os
 from utils.cv_utils import imread_unicode
 
 
@@ -47,12 +83,13 @@ class FaceEngine:
             det_size: 检测输入尺寸
         """
         if providers is None:
-            # 默认顺序：优先使用 CUDA，其次是 CPU
             providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+
+        print(f"FaceEngine: 使用 providers: {providers}")
 
         self.det_thresh = det_thresh
         self.providers = providers
-        
+
         # 确定 ctx_id (-1 为 CPU, 0 为 GPU)
         ctx_id = 0 if 'CUDAExecutionProvider' in providers else -1
 

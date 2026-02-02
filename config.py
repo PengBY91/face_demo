@@ -82,7 +82,7 @@ USE_CAMERA = False
 
 # 测试视频路径
 # Test video path
-VIDEO_PATH = "data/测试数据/测试视频1.mp4"
+VIDEO_PATH = "data/测试数据/测试视频1.avi"
 
 # 摄像头设备ID (0 为默认摄像头)
 # Camera device ID (0 for default camera)
