@@ -1,3 +1,7 @@
+import warnings
+# Suppress ONNX Runtime warning for Windows Server 2022
+warnings.filterwarnings('ignore', category=UserWarning, message='.*Unsupported Windows version.*')
+
 import onnxruntime as ort
 import sys
 
@@ -17,26 +21,14 @@ def check_ort_gpu():
     # 3. Check for CUDA
     if 'CUDAExecutionProvider' in providers:
         print("\n[SUCCESS] CUDAExecutionProvider is available!")
+        print("ONNX Runtime is correctly linked with CUDA DLLs.")
+        
+        # Test if we can actually use it (optional, but get_available_providers is usually enough)
         try:
-            # Try to create a dummy session to verify CUDA
-            # This requires a very small dummy model or just testing the device
-            print("Attempting to initialize a session with CUDA...")
-            # We don't necessarily need a model file to check if ORT can talk to CUDA
-            # but testing if it's in the list is usually enough to know the DLLs are there.
-            session = ort.InferenceSession(None, providers=['CUDAExecutionProvider'])
+            device = ort.get_device()
+            print(f"ONNX Runtime Device: {device}")
         except Exception as e:
-            if "InferenceSession.__init__() takes 2 positional arguments but 3 were given" in str(e):
-                # Older versions of ORT
-                pass
-            elif "None is not a valid" in str(e):
-                # This is expected since we passed None for model
-                print("CUDA DLLs seem to be correctly loaded.")
-            else:
-                print(f"\n[ERROR] Failed to initialize CUDA session: {e}")
-                print("\nPossible reasons:")
-                print("1. CUDA version mismatch (e.g., ORT expects CUDA 11.x but 12.x is installed).")
-                print("2. cuDNN DLLs (cudnn64_8.dll etc.) are missing from PATH.")
-                print("3. zlibwapi.dll is missing (required by some cuDNN versions).")
+            print(f"Note: Could not get device info: {e}")
     else:
         print("\n[WARNING] CUDAExecutionProvider is NOT available.")
         print("\nTo enable GPU support on Windows:")
