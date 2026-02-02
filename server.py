@@ -18,6 +18,7 @@ from config import (
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
 from utils.history_manager import HistoryManager
+from utils.cv_utils import imread_unicode
 
 # 初始化
 app = FastAPI(title="Face DB Manager")
@@ -42,7 +43,7 @@ print("服务端: 初始化完成")
 @app.get("/", response_class=HTMLResponse)
 async def read_index():
     if os.path.exists("templates/index.html"):
-        with open("templates/index.html") as f:
+        with open("templates/index.html", encoding='utf-8') as f:
             return f.read()
     return "templates/index.html not found"
 
@@ -50,7 +51,7 @@ async def read_index():
 @app.get("/history", response_class=HTMLResponse)
 async def read_history():
     if os.path.exists("templates/history.html"):
-        with open("templates/history.html") as f:
+        with open("templates/history.html", encoding='utf-8') as f:
             return f.read()
     return "templates/history.html not found"
 
@@ -58,7 +59,7 @@ async def read_history():
 @app.get("/search", response_class=HTMLResponse)
 async def read_search():
     if os.path.exists("templates/nl_query.html"):
-        with open("templates/nl_query.html") as f:
+        with open("templates/nl_query.html", encoding='utf-8') as f:
             return f.read()
     return "templates/nl_query.html not found"
 
@@ -73,8 +74,8 @@ async def upload_face(name: str = Form(...), file: UploadFile = File(...)):
 
     try:
         # 读取图片
-        import cv2
-        img = cv2.imread(tmp_path)
+        # 读取图片 (支持中文或特殊路径)
+        img = imread_unicode(tmp_path)
         if img is None:
             raise HTTPException(400, "无法读取上传的图片")
 
