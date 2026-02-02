@@ -7,10 +7,13 @@ Manages storage, querying, and snapshot images for recognition history
 """
 import os
 import sqlite3
+import time
 import cv2
 import numpy as np
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from datetime import datetime
+
+from config import HISTORY_THINNING_TIERS
 
 class HistoryManager:
     """
@@ -199,6 +202,69 @@ class HistoryManager:
             print(f"HistoryManager: 执行查询失败: {e}")
             raise e
         return results
+
+    def thin_history(self, tiers: Optional[List[Tuple]] = None) -> int:
+        """
+        分层稀疏化历史记录。
+        对每个时间区间，按 person_name 分组、按时间窗口分桶，
+        每桶只保留置信度最高的一条，删除其余记录。
+
+        Returns:
+            int: 总共删除的记录数量
+        """
+        if tiers is None:
+            tiers = HISTORY_THINNING_TIERS
+
+        total_deleted = 0
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                now_ts = int(time.time())
+
+                for i, (max_age, interval) in enumerate(tiers):
+                    # 确定时间范围的 start/end (用 Unix 时间戳)
+                    if max_age is not None:
+                        end_ts = now_ts - (tiers[i - 1][0] if i > 0 else 0)
+                        start_ts = now_ts - max_age
+                    else:
+                        # 最后一个 tier：从上一个 tier 的边界到最早
+                        end_ts = now_ts - (tiers[i - 1][0] if i > 0 else 0)
+                        start_ts = 0
+
+                    start_dt = datetime.fromtimestamp(start_ts).strftime("%Y-%m-%d %H:%M:%S") if start_ts > 0 else "1970-01-01 00:00:00"
+                    end_dt = datetime.fromtimestamp(end_ts).strftime("%Y-%m-%d %H:%M:%S")
+
+                    # 用窗口函数找出每个桶中要保留的记录 id
+                    delete_sql = """
+                        DELETE FROM recognition_history
+                        WHERE id NOT IN (
+                            SELECT id FROM (
+                                SELECT id, ROW_NUMBER() OVER (
+                                    PARTITION BY person_name,
+                                                 CAST(strftime('%%s', timestamp) AS INTEGER) / :interval
+                                    ORDER BY confidence DESC
+                                ) AS rn
+                                FROM recognition_history
+                                WHERE timestamp >= :start AND timestamp < :end
+                            ) WHERE rn = 1
+                        )
+                        AND timestamp >= :start AND timestamp < :end
+                    """
+                    cursor.execute(delete_sql, {
+                        "interval": interval,
+                        "start": start_dt,
+                        "end": end_dt,
+                    })
+                    deleted = cursor.rowcount
+                    total_deleted += deleted
+
+                conn.commit()
+                if total_deleted > 0:
+                    print(f"HistoryManager: 稀疏化完成，共删除 {total_deleted} 条记录")
+        except Exception as e:
+            print(f"HistoryManager: 稀疏化失败: {e}")
+
+        return total_deleted
 
     def cleanup_old_records(self, days: int = 30) -> int:
         """

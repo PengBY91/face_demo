@@ -92,6 +92,23 @@ CAMERA_ID = 0
 # Gallery sync interval (seconds)
 SYNC_INTERVAL = 300
 
+# 采样器上报间隔（秒）
+# Sampler flush interval (seconds)
+SAMPLER_FLUSH_INTERVAL = 120
+
+# 历史记录稀疏化策略 (距今秒数, 保留间隔秒数)
+# History thinning tiers: (seconds_ago, keep_interval_seconds)
+HISTORY_THINNING_TIERS = [
+    (600,    10),    # 最近10分钟：每10秒
+    (3600,   60),    # 最近1小时：每1分钟
+    (86400,  300),   # 最近1天：每5分钟
+    (None,   1200),  # 超过1天：每20分钟
+]
+
+# 稀疏化执行间隔（秒）
+# Thinning execution interval (seconds)
+THINNING_INTERVAL = 600
+
 # ============================================================================
 # 批量注册配置 (Batch Enrollment Configuration)
 # ============================================================================

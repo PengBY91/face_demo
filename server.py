@@ -2,6 +2,7 @@ import os
 import shutil
 import tempfile
 import base64
+import asyncio
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -13,7 +14,8 @@ from typing import List, Optional, Dict
 # 导入新模块
 from config import (
     ARCFACE_MODEL_PATH, PROVIDERS,
-    GALLERY_DIR, DET_THRESH, SERVER_PORT, SERVER_HOST
+    GALLERY_DIR, DET_THRESH, SERVER_PORT, SERVER_HOST,
+    THINNING_INTERVAL
 )
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
@@ -38,6 +40,21 @@ engine = FaceEngine(
 gallery = GalleryManager(GALLERY_DIR)
 history_manager = HistoryManager(GALLERY_DIR)
 print("服务端: 初始化完成")
+
+
+async def periodic_thin_history():
+    """定时执行历史记录稀疏化"""
+    while True:
+        await asyncio.sleep(THINNING_INTERVAL)
+        try:
+            history_manager.thin_history()
+        except Exception as e:
+            print(f"服务端: 稀疏化任务异常: {e}")
+
+
+@app.on_event("startup")
+async def start_thinning_task():
+    asyncio.create_task(periodic_thin_history())
 
 
 @app.get("/", response_class=HTMLResponse)

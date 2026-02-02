@@ -8,6 +8,8 @@ __pycache__/
 dist/
 build/
 *.msgpack
+
+*.cmd
 *.npy
 
 # === Virtual Environment ===
@@ -16,9 +18,10 @@ env/
 ENV/
 .venv/
 
-# === IDE ===
+# === IDE / Tools ===
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 .DS_Store
@@ -55,6 +58,7 @@ diag_*.jpg
 # === System ===
 .DS_Store
 Thumbs.db
+nul
 
 # === Testing ===
 .coverage

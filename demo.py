@@ -13,7 +13,8 @@ from config import (
     GALLERY_DIR, DET_THRESH,
     VIDEO_PATH, CAMERA_ID, USE_CAMERA,
     SIMILARITY_THRESHOLD, SYNC_INTERVAL,
-    SERVER_HOST, SERVER_PORT
+    SERVER_HOST, SERVER_PORT,
+    SAMPLER_FLUSH_INTERVAL
 )
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
@@ -21,12 +22,13 @@ from utils.gallery_manager import GalleryManager
 
 class HistorySampler:
     """
-    10帧采样器：每隔10帧保存一个周期内识别出的每个人的最好结果（置信度最高）
+    时间驱动采样器：每 flush_interval 秒批量上传一次，
+    期间在内存中累积每个人的最佳识别结果（最高置信度 + 对应图片）。
     """
-    def __init__(self, server_url="http://127.0.0.1:8008"):
+    def __init__(self, server_url="http://127.0.0.1:8008", flush_interval=SAMPLER_FLUSH_INTERVAL):
         self.server_url = server_url
-        self.frame_count = 0
-        self.window_size = 10
+        self.flush_interval = flush_interval  # 秒
+        self.last_flush_time = time.time()
         # 缓存当前窗口内的最佳结果 {name: {"score": score, "image": image}}
         self.best_results = {}
 
@@ -34,24 +36,22 @@ class HistorySampler:
         """
         detections: List[Dict] with 'name', 'score', 'aligned_face'
         """
-        self.frame_count += 1
-        
         for det in detections:
             name = det['name']
             if name == "Unknown":
                 continue
-            
+
             score = det['score']
             if name not in self.best_results or score > self.best_results[name]['score']:
                 self.best_results[name] = {
                     "score": score,
                     "image": det['aligned_face'].copy()
                 }
-        
-        # 周期结束，上报并清空
-        if self.frame_count >= self.window_size:
+
+        # 到达 flush_interval 时批量上传并清空
+        if time.time() - self.last_flush_time >= self.flush_interval:
             self._flush()
-            self.frame_count = 0
+            self.last_flush_time = time.time()
             self.best_results = {}
 
     def _flush(self):
