@@ -11,7 +11,8 @@ from sklearn.metrics.pairwise import cosine_similarity
 from config import (
     ARCFACE_MODEL_PATH, PROVIDERS,
     GALLERY_DIR, DET_THRESH,
-    VIDEO_PATH, CAMERA_ID, USE_CAMERA,
+    VIDEO_PATH, CAMERA_ID, VIDEO_SOURCE_TYPE,
+    RTSP_URL, RTSP_TIMEOUT, RTSP_BUFFER_SIZE,
     SIMILARITY_THRESHOLD, SYNC_INTERVAL,
     SERVER_HOST, SERVER_PORT,
     SAMPLER_FLUSH_INTERVAL
@@ -148,20 +149,37 @@ class DemoClient:
         return "Unknown", best_score, None
 
     def run(self):
-        if USE_CAMERA:
-            print(f"客户端: 正在打开摄像头 (ID: {CAMERA_ID})...")
+        # 根据配置选择视频源
+        if VIDEO_SOURCE_TYPE == "camera":
+            print(f"客户端: 正在打开本地摄像头 (ID: {CAMERA_ID})...")
             cap = cv2.VideoCapture(CAMERA_ID)
-            source_name = "Camera"
-        else:
+            source_name = f"Local Camera (ID: {CAMERA_ID})"
+        elif VIDEO_SOURCE_TYPE == "rtsp":
+            print(f"客户端: 正在连接 RTSP 网络摄像头...")
+            print(f"客户端: RTSP URL: {RTSP_URL}")
+            cap = cv2.VideoCapture(RTSP_URL)
+            # 设置 RTSP 相关参数
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, RTSP_BUFFER_SIZE)
+            source_name = f"RTSP Camera ({RTSP_URL.split('@')[-1]})"
+        else:  # video
             print(f"客户端: 正在打开视频文件 {VIDEO_PATH}...")
             cap = cv2.VideoCapture(VIDEO_PATH)
             source_name = f"Video ({VIDEO_PATH})"
 
         if not cap.isOpened():
             print(f"客户端: 错误 - 无法打开 {source_name}")
+            if VIDEO_SOURCE_TYPE == "rtsp":
+                print("客户端: RTSP 连接失败，请检查：")
+                print(f"  1. 摄像头 IP 地址是否正确: {RTSP_URL.split('@')[-1].split(':')[0]}")
+                print(f"  2. 网络连接是否正常")
+                print(f"  3. 用户名和密码是否正确")
+                print(f"  4. RTSP 流路径是否正确 (当前: {RTSP_URL.split('/')[-1] if RTSP_URL.endswith('/') else RTSP_URL.split('/')[-1]})")
+                print("  5. 如果摄像头需要特定的流路径，请在 config.py 中修改 RTSP_STREAM_PATH")
+                print("     常见路径: /stream1, /h264, /Streaming/Channels/1, /live")
             return
 
-        print(f"客户端: 开始测试 ({source_name})，按 Q 退出")
+        print(f"客户端: 成功连接到 {source_name}")
+        print(f"客户端: 开始实时识别，按 Q 退出")
         while True:
             ret, frame = cap.read()
             if not ret:

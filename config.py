@@ -76,17 +76,53 @@ SERVER_HOST = "0.0.0.0"
 # Demo 配置 (Demo Configuration)
 # ============================================================================
 
-# 是否使用摄像头 (True 使用摄像头，False 使用视频文件)
-# Whether to use camera (True to use camera, False to use video file)
-USE_CAMERA = False
+# 视频源类型: 'camera' (本地摄像头), 'rtsp' (网络摄像头), 'video' (视频文件)
+# Video source type: 'camera' (local camera), 'rtsp' (network camera), 'video' (video file)
+VIDEO_SOURCE_TYPE = "rtsp"
 
 # 测试视频路径
 # Test video path
 VIDEO_PATH = "data/测试数据/测试视频1.avi"
 
-# 摄像头设备ID (0 为默认摄像头)
-# Camera device ID (0 for default camera)
+# 本地摄像头设备ID (0 为默认摄像头)
+# Local camera device ID (0 for default camera)
 CAMERA_ID = 0
+
+# ============================================================================
+# RTSP 网络摄像头配置 (RTSP Network Camera Configuration)
+# ============================================================================
+
+# RTSP 摄像头 IP 地址
+# RTSP camera IP address
+RTSP_HOST = "192.168.10.106"
+
+# RTSP 端口
+# RTSP port
+RTSP_PORT = 554
+
+# RTSP 用户名
+# RTSP username
+RTSP_USERNAME = "admin"
+
+# RTSP 密码
+# RTSP password
+RTSP_PASSWORD = "hzsm123456"
+
+# RTSP 流路径 (根据摄像头型号可能需要调整，常见: /stream1, /h264, /Streaming/Channels/1)
+# RTSP stream path (may need adjustment based on camera model)
+RTSP_STREAM_PATH = "/0-0"
+
+# 完整的 RTSP URL (自动生成)
+# Full RTSP URL (auto-generated)
+RTSP_URL = f"rtsp://{RTSP_USERNAME}:{RTSP_PASSWORD}@{RTSP_HOST}:{RTSP_PORT}{RTSP_STREAM_PATH}"
+
+# RTSP 连接超时时间（毫秒）
+# RTSP connection timeout (milliseconds)
+RTSP_TIMEOUT = 10000
+
+# RTSP 缓冲区大小
+# RTSP buffer size
+RTSP_BUFFER_SIZE = 1024
 
 # 人脸库同步间隔 (秒)
 # Gallery sync interval (seconds)
