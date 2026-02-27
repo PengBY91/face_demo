@@ -6,6 +6,7 @@ import time
 import requests
 import base64
 from sklearn.metrics.pairwise import cosine_similarity
+from PIL import Image, ImageDraw, ImageFont
 
 # 导入新模块
 from config import (
@@ -13,12 +14,58 @@ from config import (
     GALLERY_DIR, DET_THRESH,
     VIDEO_PATH, CAMERA_ID, VIDEO_SOURCE_TYPE,
     RTSP_URL, RTSP_TIMEOUT, RTSP_BUFFER_SIZE,
-    SIMILARITY_THRESHOLD, SYNC_INTERVAL,
+    SIMILARITY_THRESHOLD, SUSPICIOUS_THRESHOLD, SYNC_INTERVAL,
     SERVER_HOST, SERVER_PORT,
     SAMPLER_FLUSH_INTERVAL
 )
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
+
+
+def cv2_add_chinese_text(img, text, position, font_size=20, color=(255, 255, 255)):
+    """
+    在 OpenCV 图像上添加中文文本
+
+    Args:
+        img: OpenCV 图像 (numpy array)
+        text: 要显示的文本
+        position: 文本位置 (x, y)
+        font_size: 字体大小
+        color: 文字颜色 (B, G, R)
+
+    Returns:
+        添加文本后的图像
+    """
+    # 将 OpenCV 图像转换为 PIL 图像
+    img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(img_pil)
+
+    # 尝试使用系统字体
+    try:
+        # Windows 系统字体
+        font_path = "C:/Windows/Fonts/msyh.ttc"  # 微软雅黑
+        if not os.path.exists(font_path):
+            font_path = "C:/Windows/Fonts/simsun.ttc"  # 宋体
+        if not os.path.exists(font_path):
+            font_path = None
+
+        if font_path:
+            font = ImageFont.truetype(font_path, font_size)
+        else:
+            font = ImageFont.load_default()
+    except:
+        font = ImageFont.load_default()
+
+    # PIL 使用 RGB 颜色
+    color_rgb = (color[2], color[1], color[0])
+
+    # 绘制文本
+    draw.text(position, text, font=font, fill=color_rgb)
+
+    # 转换回 OpenCV 格式
+    img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+
+    return img_cv
 
 
 class HistorySampler:
@@ -135,18 +182,28 @@ class DemoClient:
             self.load_gallery()
 
     def identify(self, face_embedding):
-        """识别单个人脸"""
+        """
+        识别单个人脸
+        返回: (name, score, gallery_img_path, is_suspicious)
+        - is_suspicious: True 表示疑似匹配（0.35-0.5之间）
+        """
         if face_embedding is None or len(self.feature_db_vectors) == 0:
-            return "Unknown", 0.0, None
+            return "Unknown", 0.0, None, False
 
         sims = cosine_similarity([face_embedding], self.feature_db_vectors)[0]
         best_idx = np.argmax(sims)
         best_score = sims[best_idx]
 
-        if best_score > SIMILARITY_THRESHOLD:
-            return self.feature_db_names[best_idx], best_score, None
+        # 确认匹配
+        if best_score >= SIMILARITY_THRESHOLD:
+            return self.feature_db_names[best_idx], best_score, None, False
 
-        return "Unknown", best_score, None
+        # 疑似匹配
+        elif best_score >= SUSPICIOUS_THRESHOLD:
+            return self.feature_db_names[best_idx], best_score, None, True
+
+        # 未识别
+        return "Unknown", best_score, None, False
 
     def run(self):
         # 根据配置选择视频源
@@ -190,6 +247,9 @@ class DemoClient:
             # 使用 FaceEngine 检测和提取特征
             faces = self.engine.detect_and_extract(frame)
 
+            # 用于追踪右上角显示位置的计数器（计算识别出的人和疑似的人）
+            display_index = 0
+
             for i, face in enumerate(faces):
                 # 获取边界框和特征
                 bbox = face['bbox']
@@ -197,31 +257,75 @@ class DemoClient:
                 embedding = face['embedding']
 
                 # 识别
-                name, score, gallery_img_path = self.identify(embedding)
+                name, score, gallery_img_path, is_suspicious = self.identify(embedding)
+
+                # 显示名字（疑似的加上"疑似"前缀）
+                display_name = f"疑似{name}" if is_suspicious else name
 
                 # 绘制边界框和名字
-                color = (0, 255, 0) if name != "Unknown" else (0, 0, 255)
+                # 绿色：确认匹配，黄色：疑似匹配，红色：未识别
+                if name != "Unknown":
+                    color = (0, 165, 255) if is_suspicious else (0, 255, 0)  # 黄色或绿色
+                else:
+                    color = (0, 0, 255)  # 红色
+
                 cv2.rectangle(display_frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(display_frame, f"{name} ({score:.2f})", (x1, y1 - 10),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-                # 显示匹配的照片
-                gallery_img = self.gallery.get_face_image(name)
-                if gallery_img is not None:
-                    gw = 120
-                    gh = int(gallery_img.shape[0] * (gw / gallery_img.shape[1]))
-                    gallery_img = cv2.resize(gallery_img, (gw, gh))
-                    pos_x, pos_y = display_frame.shape[1] - gw - 10, 10 + i * (gh + 30)
+                # 使用中文支持的函数显示名字
+                text_to_show = f"{display_name} ({score:.2f})"
+                display_frame = cv2_add_chinese_text(display_frame, text_to_show,
+                                                    (x1, max(y1 - 30, 10)),
+                                                    font_size=25, color=color)
 
-                    if pos_y + gh < display_frame.shape[0]:
-                        cv2.putText(display_frame, f"Match: {name}", (pos_x, pos_y - 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                        display_frame[pos_y:pos_y + gh, pos_x:pos_x + gw] = gallery_img
-                        cv2.rectangle(display_frame, (pos_x, pos_y), (pos_x + gw, pos_y + gh), (0, 255, 0), 2)
+                # 为识别出的人和疑似的人显示匹配照片（非 Unknown）
+                if name != "Unknown":
+                    gallery_img = self.gallery.get_face_image(name)
+                    if gallery_img is not None:
+                        gw = 120
+                        gh = int(gallery_img.shape[0] * (gw / gallery_img.shape[1]))
+                        gallery_img = cv2.resize(gallery_img, (gw, gh))
 
-                # 记录检测结果用于采样
-                face['name'] = name
-                face['score'] = score
+                        # 使用 display_index 计算位置，确保多个人垂直排列
+                        pos_x = display_frame.shape[1] - gw - 10
+                        pos_y = 10 + display_index * (gh + 35)
+
+                        # 检查是否超出画面
+                        if pos_y + gh < display_frame.shape[0]:
+                            # 绘制背景（半透明黑色）
+                            overlay = display_frame.copy()
+                            cv2.rectangle(overlay, (pos_x - 5, pos_y - 20),
+                                        (pos_x + gw + 5, pos_y + gh + 5),
+                                        (0, 0, 0), -1)
+                            cv2.addWeighted(overlay, 0.3, display_frame, 0.7, 0, display_frame)
+
+                            # 显示标签（疑似/确认）
+                            label = f"疑似: {name}" if is_suspicious else f"匹配: {name}"
+                            display_frame = cv2_add_chinese_text(display_frame, label,
+                                                                (pos_x, pos_y - 18),
+                                                                font_size=16, color=(255, 255, 255))
+
+                            # 显示匹配照片
+                            display_frame[pos_y:pos_y + gh, pos_x:pos_x + gw] = gallery_img
+
+                            # 绘制边框（疑似用黄色，确认用绿色）
+                            border_color = (0, 165, 255) if is_suspicious else (0, 255, 0)
+                            cv2.rectangle(display_frame, (pos_x, pos_y),
+                                        (pos_x + gw, pos_y + gh), border_color, 2)
+
+                            # 显示置信度
+                            cv2.putText(display_frame, f"{score:.2f}",
+                                      (pos_x, pos_y + gh + 15),
+                                      cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+
+                            display_index += 1
+
+                # 记录检测结果用于采样（疑似的不记录）
+                if not is_suspicious:
+                    face['name'] = name
+                    face['score'] = score
+                else:
+                    face['name'] = "Unknown"  # 疑似的不记录到历史
+                    face['score'] = score
 
             # 采样处理
             self.sampler.process_frame(faces)

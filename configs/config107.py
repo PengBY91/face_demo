@@ -98,8 +98,8 @@ CAMERA_ID = 0
 
 # RTSP 摄像头 IP 地址
 # RTSP camera IP address
-#RTSP_HOST = "192.168.10.107"
-RTSP_HOST = "192.168.10.106"
+RTSP_HOST = "192.168.10.107"
+#RTSP_HOST = "192.168.10.106"
 
 # RTSP 端口
 # RTSP port
@@ -111,13 +111,13 @@ RTSP_USERNAME = "admin"
 
 # RTSP 密码
 # RTSP password
-#RTSP_PASSWORD = "123456"
-RTSP_PASSWORD = "hzsm123456"
+RTSP_PASSWORD = "123456"
+#RTSP_PASSWORD = "hzsm123456"
 
 # RTSP 流路径 (根据摄像头型号可能需要调整，常见: /stream1, /h264, /Streaming/Channels/1)
 # RTSP stream path (may need adjustment based on camera model)
-#RTSP_STREAM_PATH = "/stream1"
-RTSP_STREAM_PATH = "/0-0"
+RTSP_STREAM_PATH = "/stream1"
+#RTSP_STREAM_PATH = "/0-0"
 
 # 完整的 RTSP URL (自动生成)
 # Full RTSP URL (auto-generated)

@@ -49,6 +49,7 @@ dataset/
 models/
 
 # === Logs and Temps ===
+logs/
 *.log
 *.tmp
 records.json
