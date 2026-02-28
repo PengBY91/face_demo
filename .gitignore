@@ -56,6 +56,9 @@ records.json
 diagnose_*.jpg
 diag_*.jpg
 
+# === Backup ===
+backup/
+
 # === System ===
 .DS_Store
 Thumbs.db

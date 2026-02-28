@@ -8,6 +8,39 @@ import base64
 from sklearn.metrics.pairwise import cosine_similarity
 from PIL import Image, ImageDraw, ImageFont
 
+# 全局字体缓存，避免每次调用都加载字体文件
+_CACHED_FONTS = {}
+_DEFAULT_FONT = None
+
+def _get_font(font_size=20):
+    """
+    获取缓存的字体对象，避免重复加载
+    """
+    global _DEFAULT_FONT
+
+    # 尝试使用系统字体
+    font_path = None
+    try:
+        # Windows 系统字体
+        font_path = "C:/Windows/Fonts/msyh.ttc"  # 微软雅黑
+        if not os.path.exists(font_path):
+            font_path = "C:/Windows/Fonts/simsun.ttc"  # 宋体
+        if not os.path.exists(font_path):
+            font_path = None
+    except:
+        font_path = None
+
+    if font_path is None:
+        if _DEFAULT_FONT is None:
+            _DEFAULT_FONT = ImageFont.load_default()
+        return _DEFAULT_FONT
+
+    # 使用缓存
+    key = (font_path, font_size)
+    if key not in _CACHED_FONTS:
+        _CACHED_FONTS[key] = ImageFont.truetype(font_path, font_size)
+    return _CACHED_FONTS[key]
+
 # 导入新模块
 from config import (
     ARCFACE_MODEL_PATH, PROVIDERS,
@@ -40,21 +73,8 @@ def cv2_add_chinese_text(img, text, position, font_size=20, color=(255, 255, 255
     img_pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
 
-    # 尝试使用系统字体
-    try:
-        # Windows 系统字体
-        font_path = "C:/Windows/Fonts/msyh.ttc"  # 微软雅黑
-        if not os.path.exists(font_path):
-            font_path = "C:/Windows/Fonts/simsun.ttc"  # 宋体
-        if not os.path.exists(font_path):
-            font_path = None
-
-        if font_path:
-            font = ImageFont.truetype(font_path, font_size)
-        else:
-            font = ImageFont.load_default()
-    except:
-        font = ImageFont.load_default()
+    # 使用缓存的字体
+    font = _get_font(font_size)
 
     # PIL 使用 RGB 颜色
     color_rgb = (color[2], color[1], color[0])
@@ -73,46 +93,60 @@ class HistorySampler:
     时间驱动采样器：每 flush_interval 秒批量上传一次，
     期间在内存中累积每个人的最佳识别结果（最高置信度 + 对应图片）。
     """
+    # 最大缓存数量，防止内存无限增长
+    MAX_BEST_RESULTS = 100
+    # HTTP 请求超时时间（秒）
+    REQUEST_TIMEOUT = 5
+
     def __init__(self, server_url="http://127.0.0.1:8008", flush_interval=SAMPLER_FLUSH_INTERVAL):
         self.server_url = server_url
         self.flush_interval = flush_interval  # 秒
         self.last_flush_time = time.time()
         # 缓存当前窗口内的最佳结果 {name: {"score": score, "image": image}}
         self.best_results = {}
+        # 使用 Session 复用 HTTP 连接
+        self.session = requests.Session()
+        # 线程锁保护 best_results
+        self._lock = threading.Lock()
 
     def process_frame(self, detections):
         """
         detections: List[Dict] with 'name', 'score', 'aligned_face'
         """
-        for det in detections:
-            name = det['name']
-            if name == "Unknown":
-                continue
+        with self._lock:
+            for det in detections:
+                name = det['name']
+                if name == "Unknown":
+                    continue
 
-            score = det['score']
-            if name not in self.best_results or score > self.best_results[name]['score']:
-                self.best_results[name] = {
-                    "score": score,
-                    "image": det['aligned_face'].copy()
-                }
+                score = det['score']
+                # 限制最大缓存数量
+                if name not in self.best_results:
+                    if len(self.best_results) >= self.MAX_BEST_RESULTS:
+                        continue  # 跳过，避免内存无限增长
+                if name not in self.best_results or score > self.best_results[name]['score']:
+                    self.best_results[name] = {
+                        "score": score,
+                        "image": det['aligned_face'].copy()
+                    }
 
-        # 到达 flush_interval 时批量上传并清空
-        if time.time() - self.last_flush_time >= self.flush_interval:
-            self._flush()
-            self.last_flush_time = time.time()
-            self.best_results = {}
+            # 到达 flush_interval 时批量上传并清空
+            if time.time() - self.last_flush_time >= self.flush_interval:
+                self._flush()
+                self.last_flush_time = time.time()
+                self.best_results = {}
 
     def _flush(self):
         if not self.best_results:
             return
-            
+
         records = []
         for name, data in self.best_results.items():
             try:
                 # 将图片转换为字节流并转为 base64
                 _, img_encoded = cv2.imencode('.jpg', data['image'])
                 img_base64 = base64.b64encode(img_encoded.tobytes()).decode('utf-8')
-                
+
                 records.append({
                     'name': name,
                     'confidence': float(data['score']),
@@ -123,12 +157,18 @@ class HistorySampler:
 
         if records:
             try:
-                resp = requests.post(f"{self.server_url}/api/records_batch", json=records)
+                resp = self.session.post(
+                    f"{self.server_url}/api/records_batch",
+                    json=records,
+                    timeout=self.REQUEST_TIMEOUT
+                )
                 if resp.status_code == 200:
                     print(f"采样器: 已批量保存 {len(records)} 条识别结果")
                 else:
                     print(f"采样器: 批量保存失败: {resp.text}")
-            except Exception as e:
+            except requests.exceptions.Timeout:
+                print(f"采样器: 批量上报超时")
+            except requests.exceptions.RequestException as e:
                 print(f"采样器: 批量上报异常: {e}")
 
 
@@ -205,8 +245,10 @@ class DemoClient:
         # 未识别
         return "Unknown", best_score, None, False
 
-    def run(self):
-        # 根据配置选择视频源
+    def _connect_video_source(self):
+        """
+        连接视频源，返回 (cap, source_name) 或 (None, None)
+        """
         if VIDEO_SOURCE_TYPE == "camera":
             print(f"客户端: 正在打开本地摄像头 (ID: {CAMERA_ID})...")
             cap = cv2.VideoCapture(CAMERA_ID)
@@ -214,7 +256,9 @@ class DemoClient:
         elif VIDEO_SOURCE_TYPE == "rtsp":
             print(f"客户端: 正在连接 RTSP 网络摄像头...")
             print(f"客户端: RTSP URL: {RTSP_URL}")
-            cap = cv2.VideoCapture(RTSP_URL)
+            # 设置 RTSP 环境变量（FFMPEG 后端）
+            os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'rtsp_transport;tcp|udp'
+            cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
             # 设置 RTSP 相关参数
             cap.set(cv2.CAP_PROP_BUFFERSIZE, RTSP_BUFFER_SIZE)
             source_name = f"RTSP Camera ({RTSP_URL.split('@')[-1]})"
@@ -233,15 +277,73 @@ class DemoClient:
                 print(f"  4. RTSP 流路径是否正确 (当前: {RTSP_URL.split('/')[-1] if RTSP_URL.endswith('/') else RTSP_URL.split('/')[-1]})")
                 print("  5. 如果摄像头需要特定的流路径，请在 config.py 中修改 RTSP_STREAM_PATH")
                 print("     常见路径: /stream1, /h264, /Streaming/Channels/1, /live")
+            return None, None
+
+        return cap, source_name
+
+    def _reconnect_rtsp(self, max_retries=5, retry_delay=3):
+        """
+        RTSP 重连机制
+        返回: cap 或 None
+        """
+        for retry in range(max_retries):
+            print(f"客户端: 尝试重连... ({retry + 1}/{max_retries})")
+            time.sleep(retry_delay)
+
+            cap = cv2.VideoCapture(RTSP_URL, cv2.CAP_FFMPEG)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, RTSP_BUFFER_SIZE)
+
+            if cap.isOpened():
+                # 验证连接
+                time.sleep(1)
+                for _ in range(3):
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None:
+                        print(f"客户端: 重连成功!")
+                        return cap
+                    time.sleep(0.5)
+                cap.release()
+
+        print(f"客户端: 达到最大重试次数，重连失败!")
+        return None
+
+    def run(self):
+        cap, source_name = self._connect_video_source()
+        if cap is None:
             return
 
         print(f"客户端: 成功连接到 {source_name}")
         print(f"客户端: 开始实时识别，按 Q 退出")
-        while True:
+
+        # 创建可调整大小的窗口
+        cv2.namedWindow('Face Recognition Demo', cv2.WINDOW_NORMAL)
+        cv2.resizeWindow('Face Recognition Demo', 1280, 720)
+
+        running = True
+        consecutive_failures = 0
+        MAX_CONSECUTIVE_FAILURES = 10  # 连续失败次数阈值
+
+        while running:
             ret, frame = cap.read()
             if not ret:
-                break
+                consecutive_failures += 1
+                print(f"客户端: 读取帧失败 ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})")
 
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    if VIDEO_SOURCE_TYPE == "rtsp":
+                        print("客户端: 检测到连接中断，尝试重连...")
+                        cap.release()
+                        cap = self._reconnect_rtsp()
+                        if cap is None:
+                            running = False
+                            break
+                        consecutive_failures = 0
+                    else:
+                        print("客户端: 视频流已结束或发生错误")
+                        break
+                continue
+
+            consecutive_failures = 0  # 重置失败计数
             display_frame = frame.copy()
 
             # 使用 FaceEngine 检测和提取特征
@@ -332,9 +434,10 @@ class DemoClient:
 
             cv2.imshow('Face Recognition Demo', display_frame)
             if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                running = False
 
-        cap.release()
+        if cap is not None:
+            cap.release()
         cv2.destroyAllWindows()
 
 

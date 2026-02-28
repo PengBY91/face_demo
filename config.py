@@ -167,3 +167,11 @@ SHOW_VISUALIZATION = False
 # 可视化显示延迟 (毫秒)
 # Visualization display delay (milliseconds)
 VISUALIZATION_DELAY = 200
+
+# ============================================================================
+# 多路摄像头配置 (Multi-Camera Configuration)
+# ============================================================================
+
+# 从 configs/cameras.py 导入多路摄像头配置
+# Import multi-camera configuration from configs/cameras.py
+from configs.cameras import CAMERAS, get_camera_url, get_enabled_cameras

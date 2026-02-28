@@ -43,42 +43,58 @@ class HistoryManager:
                     person_name TEXT NOT NULL,
                     confidence REAL NOT NULL,
                     face_image BLOB,
-                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    camera_id TEXT DEFAULT '',
+                    camera_name TEXT DEFAULT ''
                 )
             ''')
             # 添加索引以优化查询
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_name ON recognition_history(person_name)')
             cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_timestamp ON recognition_history(timestamp)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_camera ON recognition_history(camera_id)')
+
+            # 为旧表添加新字段（如果不存在）
+            try:
+                cursor.execute("ALTER TABLE recognition_history ADD COLUMN camera_id TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
+            try:
+                cursor.execute("ALTER TABLE recognition_history ADD COLUMN camera_name TEXT DEFAULT ''")
+            except sqlite3.OperationalError:
+                pass  # 字段已存在
+
             conn.commit()
 
     def add_history_records_batch(self, records: List[Dict]) -> bool:
         """
         批量添加历史记录
         Args:
-            records: 列表，每个元素包含 {name, confidence, image_bytes}
+            records: 列表，每个元素包含 {name, confidence, image, camera_id, camera_name}
         """
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                
+
                 rows = []
                 for rec in records:
                     name = rec['name']
                     confidence = rec['confidence']
-                    face_img = rec['image'] # 应该是 bytes
-                    
+                    face_img = rec['image']  # 应该是 bytes
+                    camera_id = rec.get('camera_id', '')
+                    camera_name = rec.get('camera_name', '')
+
                     if isinstance(face_img, np.ndarray):
                         _, img_encoded = cv2.imencode('.jpg', face_img)
                         img_blob = img_encoded.tobytes()
                     else:
                         img_blob = face_img
-                    
-                    rows.append((name, confidence, img_blob, now_str))
-                
+
+                    rows.append((name, confidence, img_blob, now_str, camera_id, camera_name))
+
                 cursor.executemany('''
-                    INSERT INTO recognition_history (person_name, confidence, face_image, timestamp)
-                    VALUES (?, ?, ?, ?)
+                    INSERT INTO recognition_history (person_name, confidence, face_image, timestamp, camera_id, camera_name)
+                    VALUES (?, ?, ?, ?, ?, ?)
                 ''', rows)
                 conn.commit()
             return True
@@ -113,16 +129,16 @@ class HistoryManager:
             print(f"HistoryManager: 保存历史失败: {e}")
             return False
 
-    def get_history(self, name: Optional[str] = None, start_time: Optional[str] = None, 
+    def get_history(self, name: Optional[str] = None, start_time: Optional[str] = None,
                     end_time: Optional[str] = None, limit: int = 100, offset: int = 0,
-                    include_images: bool = False) -> List[Dict]:
+                    include_images: bool = False, camera_id: Optional[str] = None) -> List[Dict]:
         """查询历史记录"""
         import base64
-        
-        cols = "id, person_name, confidence, timestamp"
+
+        cols = "id, person_name, confidence, timestamp, camera_id, camera_name"
         if include_images:
             cols += ", face_image"
-            
+
         query = f"SELECT {cols} FROM recognition_history WHERE 1=1"
         params = []
         if name:
@@ -134,6 +150,9 @@ class HistoryManager:
         if end_time:
             query += " AND timestamp <= ?"
             params.append(end_time)
+        if camera_id:
+            query += " AND camera_id = ?"
+            params.append(camera_id)
 
         query += " ORDER BY timestamp DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])
@@ -149,10 +168,12 @@ class HistoryManager:
                         "person_name": row[1],
                         "confidence": row[2],
                         "timestamp": row[3],
+                        "camera_id": row[4] if len(row) > 4 else "",
+                        "camera_name": row[5] if len(row) > 5 else "",
                         "image_url": f"/api/history_image/{row[0]}"
                     }
-                    if include_images and len(row) > 4:
-                        img_blob = row[4]
+                    if include_images and len(row) > 6:
+                        img_blob = row[6]
                         if img_blob:
                             base64_img = base64.b64encode(img_blob).decode('utf-8')
                             item["image_data"] = f"data:image/jpeg;base64,{base64_img}"

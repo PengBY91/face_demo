@@ -73,7 +73,15 @@
         style="animation-delay: 0.2s"
       >
         <form id="filterForm" class="row g-3">
-          <div class="col-lg-3 col-md-6">
+          <div class="col-lg-2 col-md-4">
+            <label class="form-label small text-muted fw-bold mb-2"
+              >摄像头</label
+            >
+            <select class="form-select" id="filterCamera">
+              <option value="">全部摄像头</option>
+            </select>
+          </div>
+          <div class="col-lg-2 col-md-4">
             <label class="form-label small text-muted fw-bold mb-2"
               >搜索姓名</label
             >
@@ -84,7 +92,7 @@
               placeholder="人员名称..."
             />
           </div>
-          <div class="col-lg-3 col-md-6">
+          <div class="col-lg-3 col-md-4">
             <label class="form-label small text-muted fw-bold mb-2"
               >开始时间</label
             >
@@ -100,7 +108,7 @@
             >
             <input type="datetime-local" class="form-control" id="filterEnd" />
           </div>
-          <div class="col-lg-3 col-md-6 d-flex align-items-end">
+          <div class="col-lg-2 col-md-6 d-flex align-items-end">
             <button type="submit" class="btn btn-primary w-100 py-3 shadow-sm">
               立即筛选
             </button>
@@ -124,12 +132,31 @@
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script>
+      // 加载摄像头列表
+      async function loadCameras() {
+        try {
+          const res = await fetch('/api/cameras');
+          const cameras = await res.json();
+          const select = document.getElementById('filterCamera');
+          cameras.forEach(cam => {
+            const option = document.createElement('option');
+            option.value = cam.id;
+            option.textContent = cam.name;
+            select.appendChild(option);
+          });
+        } catch (err) {
+          console.error('加载摄像头列表失败:', err);
+        }
+      }
+
       async function loadHistory() {
+        const cameraId = document.getElementById("filterCamera").value;
         const name = document.getElementById("filterName").value;
         const start = document.getElementById("filterStart").value;
         const end = document.getElementById("filterEnd").value;
 
         let url = `/api/history?limit=48&include_images=true`;
+        if (cameraId) url += `&camera_id=${encodeURIComponent(cameraId)}`;
         if (name) url += `&name=${encodeURIComponent(name)}`;
         if (start) url += `&start_time=${start.replace("T", " ")}`;
         if (end) url += `&end_time=${end.replace("T", " ")}`;
@@ -154,6 +181,10 @@
           data.forEach((item, index) => {
             const delay = (index % 12) * 0.05;
             const imgSrc = item.image_data || item.image_url;
+            const cameraName = item.camera_name || '';
+            const cameraBadge = cameraName
+              ? `<span class="badge bg-info text-dark me-2">${cameraName}</span>`
+              : '';
             const card = `
                         <div class="col-xl-3 col-lg-4 col-sm-6 animate-fade-in" style="animation-delay: ${delay}s">
                             <div class="card h-100">
@@ -166,6 +197,7 @@
                                 <div class="card-body">
                                     <h5 class="card-title mb-1 text-dark fw-bold text-truncate">${item.person_name}</h5>
                                     <div class="d-flex align-items-center text-muted small mt-2">
+                                        ${cameraBadge}
                                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" class="me-1" viewBox="0 0 16 16">
                                           <path d="M8 3.5a.5.5 0 0 0-1 0V9a.5.5 0 0 0 .252.434l3.5 2a.5.5 0 0 0 .496-.868L8 8.71V3.5z"/>
                                           <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/>
@@ -193,7 +225,8 @@
         loadHistory();
       });
 
-      // Initial load
+      // 初始化
+      loadCameras();
       loadHistory();
     </script>
   </body>

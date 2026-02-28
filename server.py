@@ -15,7 +15,7 @@ from typing import List, Optional, Dict
 from config import (
     ARCFACE_MODEL_PATH, PROVIDERS,
     GALLERY_DIR, DET_THRESH, SERVER_PORT, SERVER_HOST,
-    THINNING_INTERVAL
+    THINNING_INTERVAL, CAMERAS
 )
 from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
@@ -201,10 +201,24 @@ def get_history(
     end_time: Optional[str] = None,
     limit: int = 100,
     offset: int = 0,
-    include_images: bool = False
+    include_images: bool = False,
+    camera_id: Optional[str] = None
 ):
     """获取识别历史记录"""
-    return history_manager.get_history(name, start_time, end_time, limit, offset, include_images)
+    return history_manager.get_history(name, start_time, end_time, limit, offset, include_images, camera_id)
+
+
+@app.get("/api/cameras")
+def get_cameras():
+    """获取摄像头列表"""
+    cameras = []
+    for cam in CAMERAS:
+        if cam.get('enabled', False):
+            cameras.append({
+                'id': cam['id'],
+                'name': cam['name']
+            })
+    return cameras
 
 
 @app.get("/api/history_image/{record_id}")
@@ -229,7 +243,9 @@ async def add_records_batch(records: List[Dict]):
             name = rec.get('name')
             confidence = rec.get('confidence')
             image_b64 = rec.get('image_b64')
-            
+            camera_id = rec.get('camera_id', '')  # 摄像头ID (可选)
+            camera_name = rec.get('camera_name', '')  # 摄像头名称 (可选)
+
             if image_b64:
                 # 去掉可能存在的 'data:image/jpeg;base64,' 前缀
                 if ',' in image_b64:
@@ -237,17 +253,19 @@ async def add_records_batch(records: List[Dict]):
                 img_bytes = base64.b64decode(image_b64)
             else:
                 img_bytes = b""
-                
+
             processed_records.append({
                 'name': name,
                 'confidence': confidence,
-                'image': img_bytes
+                'image': img_bytes,
+                'camera_id': camera_id,
+                'camera_name': camera_name
             })
-            
+
         success = history_manager.add_history_records_batch(processed_records)
         if not success:
             raise HTTPException(500, "批量保存历史记录失败")
-            
+
         return {"status": "ok", "count": len(processed_records)}
     except Exception as e:
         print(f"服务端: 批量保存记录失败: {e}")
