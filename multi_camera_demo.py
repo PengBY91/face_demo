@@ -649,6 +649,14 @@ class MultiCameraApp:
         self.selected_camera_index = 0  # 当前选中的摄像头索引
         self.thumbnail_scroll_offset = 0  # 缩略图滚动偏移量
 
+        # 侧边栏状态（收起/展开）
+        self.sidebar_collapsed = False
+        self.sidebar_collapse_button_rect = None  # 收起按钮区域
+        self.sidebar_expand_button_rect = None  # 展开按钮区域
+
+        # 全屏状态
+        self.fullscreen = False
+
         # 系统状态
         self.running = True
 
@@ -724,6 +732,10 @@ class MultiCameraApp:
                 # 限制显示数量
                 if len(self.display_records) > self.max_display_records:
                     self.display_records.pop()
+
+                # 在控制台打印识别日志
+                time_str = datetime.fromtimestamp(record.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[识别] {time_str} | 摄像头: {record.camera_name} | 人员: {record.name} | 置信度: {record.score:.2%}")
         except queue.Empty:
             pass
 
@@ -916,17 +928,35 @@ class MultiCameraApp:
                 score = det['score']
                 is_suspicious = det['is_suspicious']
 
+                # 将检测框扩大到 1.5 倍
+                bbox_width = x2 - x1
+                bbox_height = y2 - y1
+                cx = (x1 + x2) / 2  # 中心点
+                cy = (y1 + y2) / 2
+
+                # 扩展后的宽高
+                expand_ratio = 1.5
+                new_width = bbox_width * expand_ratio
+                new_height = bbox_height * expand_ratio
+
+                # 计算新的坐标，并确保不超出画面边界
+                new_x1 = int(max(cx - new_width / 2, 0))
+                new_y1 = int(max(cy - new_height / 2, 0))
+                new_x2 = int(min(cx + new_width / 2, frame.shape[1] - 1))
+                new_y2 = int(min(cy + new_height / 2, frame.shape[0] - 1))
+
                 # 颜色：绿色-确认，黄色-疑似，红色-未知
                 if name != "Unknown":
                     color = (0, 165, 255) if is_suspicious else (0, 255, 0)
                 else:
                     color = (0, 0, 255)
 
-                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+                # 绘制更粗的检测框（线条宽度从 3 增加到 5）
+                cv2.rectangle(frame, (new_x1, new_y1), (new_x2, new_y2), color, 5)
 
                 display_name = f"疑似{name}" if is_suspicious else name
                 text = f"{display_name} ({score:.2f})"
-                frame = cv2_add_chinese_text(frame, text, (x1, max(y1 - 30, 10)),
+                frame = cv2_add_chinese_text(frame, text, (new_x1, max(new_y1 - 30, 10)),
                                             font_size=22, color=color)
 
             # 缩放到目标大小
@@ -965,6 +995,31 @@ class MultiCameraApp:
         cv2.rectangle(canvas, (0, 0), (width, title_height), (50, 50, 70), -1)
         canvas = cv2_add_chinese_text(canvas, "系统状态", (width // 2 - 45, 8), font_size=18, color=(255, 255, 255))
 
+        # 折叠按钮（放在标题栏最右侧）
+        btn_x = width - 20
+        btn_y = title_height // 2
+        btn_size = 10
+
+        # 绘制折叠按钮背景
+        cv2.rectangle(canvas, (btn_x - btn_size, btn_y - btn_size),
+                     (btn_x + btn_size, btn_y + btn_size), (80, 80, 100), -1)
+
+        # 绘制向右箭头（表示点击后侧边栏会收起到右边）
+        arrow_points = np.array([
+            [btn_x - 5, btn_y - 6],
+            [btn_x + 5, btn_y],
+            [btn_x - 5, btn_y + 6]
+        ])
+        cv2.fillPoly(canvas, [arrow_points], (200, 200, 220))
+
+        # 保存折叠按钮区域（用于点击检测）
+        self.sidebar_collapse_button_rect = {
+            'x': btn_x - btn_size,
+            'y': btn_y - btn_size,
+            'width': btn_size * 2,
+            'height': btn_size * 2
+        }
+
         y_offset = title_height + 15
         line_height = 28
 
@@ -998,6 +1053,44 @@ class MultiCameraApp:
 
         return canvas
 
+    def _render_collapsed_sidebar(self, canvas: np.ndarray, sidebar_height: int):
+        """
+        渲染收起状态的侧边栏（只显示展开按钮条）
+
+        Args:
+            canvas: 画布
+            sidebar_height: 侧边栏高度
+        """
+        # 整体背景（窄条）
+        collapsed_width = 30
+        cv2.rectangle(canvas, (0, 0), (collapsed_width, sidebar_height), (35, 35, 50), -1)
+
+        # 展开按钮放在最顶端
+        btn_x = collapsed_width // 2
+        btn_y = 20  # 放在顶部
+        btn_size = 12
+
+        # 绘制展开按钮背景
+        cv2.rectangle(canvas, (5, btn_y - btn_size), (collapsed_width - 5, btn_y + btn_size), (60, 60, 80), -1)
+
+        # 绘制向左箭头（表示点击后侧边栏会从右边展开）
+        arrow_points = np.array([
+            [btn_x + 5, btn_y - 6],
+            [btn_x - 5, btn_y],
+            [btn_x + 5, btn_y + 6]
+        ])
+        cv2.fillPoly(canvas, [arrow_points], (200, 200, 220))
+
+        # 保存展开按钮区域
+        self.sidebar_expand_button_rect = {
+            'x': 0,
+            'y': btn_y - btn_size,
+            'width': collapsed_width,
+            'height': btn_size * 2
+        }
+
+        return canvas, collapsed_width
+
     def _render_sidebar(self, canvas: np.ndarray, sidebar_width: int, sidebar_height: int):
         """
         渲染侧边栏（上方系统状态 + 下方识别日志）
@@ -1010,7 +1103,7 @@ class MultiCameraApp:
         # 整体背景
         cv2.rectangle(canvas, (0, 0), (sidebar_width, sidebar_height), (25, 25, 35), -1)
 
-        # 渲染系统状态面板（上方）
+        # 渲染系统状态面板（上方，包含折叠按钮）
         status_canvas = canvas[:STATUS_PANEL_HEIGHT, :]
         status_canvas = self._render_status_panel(status_canvas, sidebar_width, STATUS_PANEL_HEIGHT)
         canvas[:STATUS_PANEL_HEIGHT, :] = status_canvas
@@ -1038,49 +1131,71 @@ class MultiCameraApp:
 
     def _render_record_card(self, canvas: np.ndarray, x: int, y: int,
                            width: int, height: int, record: DetectionRecord):
-        """渲染单条识别记录卡片"""
+        """
+        渲染单条识别记录卡片
+
+        显示信息：
+        - 左侧：抓拍人脸头像
+        - 中间：摄像头名称、人员姓名、置信度、完整日期时间
+        - 右侧：底库照片（如有）
+        """
         # 卡片背景
         cv2.rectangle(canvas, (x, y), (x + width, y + height), (40, 40, 55), -1)
         cv2.rectangle(canvas, (x, y), (x + width, y + height), (60, 60, 80), 1)
 
-        # 抓拍图
-        snapshot_size = height - 10
-        snapshot = cv2.resize(record.snapshot, (snapshot_size, snapshot_size))
-        canvas[y + 5:y + 5 + snapshot_size, x + 5:x + 5 + snapshot_size] = snapshot
+        # 计算尺寸
+        snapshot_size = height - 16  # 抓拍图大小
+        margin = 8
 
-        # 信息区域
-        info_x = x + snapshot_size + 15
-        info_y = y + 10
+        # ===== 左侧：抓拍人脸头像 =====
+        snapshot_x = x + margin
+        snapshot_y = y + margin // 2
+        try:
+            snapshot = cv2.resize(record.snapshot, (snapshot_size, snapshot_size))
+            canvas[snapshot_y:snapshot_y + snapshot_size, snapshot_x:snapshot_x + snapshot_size] = snapshot
+            # 头像边框
+            cv2.rectangle(canvas, (snapshot_x, snapshot_y),
+                         (snapshot_x + snapshot_size, snapshot_y + snapshot_size), (100, 150, 255), 2)
+        except:
+            pass
 
-        # 摄像头名称
-        canvas = cv2_add_chinese_text(canvas, f"[{record.camera_name}]",
-                                     (info_x, info_y), font_size=14, color=(100, 200, 255))
-        info_y += 20
+        # ===== 中间：信息区域 =====
+        info_x = snapshot_x + snapshot_size + 12
+        info_y = y + 6
 
-        # 人员姓名
+        # 摄像头名称（带图标背景）
+        cam_text = f"[{record.camera_name}]"
+        canvas = cv2_add_chinese_text(canvas, cam_text,
+                                     (info_x, info_y), font_size=13, color=(100, 200, 255))
+        info_y += 18
+
+        # 人员姓名（高亮显示）
         canvas = cv2_add_chinese_text(canvas, record.name,
-                                     (info_x, info_y), font_size=18, color=(0, 255, 0))
-        info_y += 25
+                                     (info_x, info_y), font_size=20, color=(0, 255, 100))
+        info_y += 26
 
         # 置信度
-        cv2.putText(canvas, f"{record.score:.2f}", (info_x, info_y + 5),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        info_y += 20
+        score_text = f"Score: {record.score:.2%}"
+        cv2.putText(canvas, score_text, (info_x, info_y + 5),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
+        info_y += 18
 
-        # 时间
-        time_str = datetime.fromtimestamp(record.timestamp).strftime("%H:%M:%S")
-        cv2.putText(canvas, time_str, (info_x, info_y + 5),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
+        # 完整识别时间
+        time_str = datetime.fromtimestamp(record.timestamp).strftime("%Y-%m-%d %H:%M:%S")
+        canvas = cv2_add_chinese_text(canvas, time_str,
+                                     (info_x, info_y), font_size=12, color=(150, 150, 150))
 
-        # 底库照片（如果有的话，显示在右侧）
+        # ===== 右侧：底库照片（如有） =====
         if record.gallery_img is not None:
-            gallery_size = height - 20
+            gallery_size = height - 16
             try:
                 gallery_img = cv2.resize(record.gallery_img, (gallery_size, gallery_size))
-                gallery_x = x + width - gallery_size - 5
-                canvas[y + 10:y + 10 + gallery_size, gallery_x:gallery_x + gallery_size] = gallery_img
-                cv2.rectangle(canvas, (gallery_x, y + 10),
-                            (gallery_x + gallery_size, y + 10 + gallery_size), (0, 255, 0), 1)
+                gallery_x = x + width - gallery_size - margin
+                gallery_y = y + margin // 2
+                canvas[gallery_y:gallery_y + gallery_size, gallery_x:gallery_x + gallery_size] = gallery_img
+                # 底库照片边框
+                cv2.rectangle(canvas, (gallery_x, gallery_y),
+                            (gallery_x + gallery_size, gallery_y + gallery_size), (0, 200, 100), 2)
             except:
                 pass
 
@@ -1110,12 +1225,18 @@ class MultiCameraApp:
         """主循环"""
         print("MultiCameraApp: 启动主循环，按 Q 退出")
         print("MultiCameraApp: 点击缩略图切换摄像头，鼠标滚轮滑动缩略图")
+        print("MultiCameraApp: 点击侧边栏收起/展开按钮可折叠侧边栏")
+        print("MultiCameraApp: 按 F 键切换全屏模式，按 S 键切换侧边栏")
 
         # 初始化缩略图位置信息
         self.thumbnail_rects = []
 
         # 创建可调整大小的窗口
+        # WINDOW_NORMAL: 允许调整窗口大小
+        # 注意：OpenCV 窗口受操作系统限制，最大不超过显示器分辨率
         cv2.namedWindow('Multi-Camera Face Recognition', cv2.WINDOW_NORMAL)
+
+        # 设置默认窗口大小
         cv2.resizeWindow('Multi-Camera Face Recognition', WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
 
         # 设置鼠标回调
@@ -1125,13 +1246,19 @@ class MultiCameraApp:
             # 处理识别记录队列
             self._process_detection_queue()
 
-            # 获取当前窗口大小（支持动态调整）
+            # 获取当前窗口大小（支持动态调整，无最大尺寸限制）
             window_width = max(cv2.getWindowImageRect('Multi-Camera Face Recognition')[2], WINDOW_MIN_WIDTH)
             window_height = max(cv2.getWindowImageRect('Multi-Camera Face Recognition')[3], WINDOW_MIN_HEIGHT)
 
             # 计算布局参数
-            video_width = int(window_width * VIDEO_RATIO)
-            sidebar_width = window_width - video_width
+            if self.sidebar_collapsed:
+                # 侧边栏收起时，视频区域占据更多空间
+                collapsed_width = 30
+                video_width = window_width - collapsed_width
+                sidebar_width = collapsed_width
+            else:
+                video_width = int(window_width * VIDEO_RATIO)
+                sidebar_width = window_width - video_width
             main_height = window_height - STATUS_BAR_HEIGHT
 
             # 创建主画布
@@ -1140,11 +1267,18 @@ class MultiCameraApp:
             # 渲染视频区域（上方缩略图 + 下方大画面）
             self._render_video_area(canvas, video_width, main_height)
 
-            # 渲染侧边栏（右侧：系统状态 + 识别日志）
-            if sidebar_width > 100 and main_height > 100:  # 确保侧边栏有足够空间
+            # 渲染侧边栏
+            if self.sidebar_collapsed:
+                # 渲染收起状态的侧边栏
                 sidebar_canvas = canvas[:main_height, video_width:].copy()
-                sidebar_canvas = self._render_sidebar(sidebar_canvas, sidebar_width, main_height)
+                sidebar_canvas, actual_width = self._render_collapsed_sidebar(sidebar_canvas, main_height)
                 canvas[:main_height, video_width:] = sidebar_canvas
+            else:
+                # 渲染展开状态的侧边栏（右侧：系统状态 + 识别日志）
+                if sidebar_width > 100 and main_height > 100:  # 确保侧边栏有足够空间
+                    sidebar_canvas = canvas[:main_height, video_width:].copy()
+                    sidebar_canvas = self._render_sidebar(sidebar_canvas, sidebar_width, main_height)
+                    canvas[:main_height, video_width:] = sidebar_canvas
 
             # 渲染状态栏
             status_canvas = canvas[main_height:, :].copy()
@@ -1158,6 +1292,20 @@ class MultiCameraApp:
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q') or key == ord('Q'):
                 self.running = False
+            elif key == ord('s') or key == ord('S'):
+                # S 键切换侧边栏
+                self.sidebar_collapsed = not self.sidebar_collapsed
+                print(f"MultiCameraApp: 侧边栏{'已收起' if self.sidebar_collapsed else '已展开'}")
+            elif key == ord('f') or key == ord('F'):
+                # F 键切换全屏模式
+                self.fullscreen = not self.fullscreen
+                if self.fullscreen:
+                    cv2.setWindowProperty('Multi-Camera Face Recognition', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
+                    print("MultiCameraApp: 已进入全屏模式")
+                else:
+                    cv2.setWindowProperty('Multi-Camera Face Recognition', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_NORMAL)
+                    cv2.resizeWindow('Multi-Camera Face Recognition', WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT)
+                    print("MultiCameraApp: 已退出全屏模式")
 
         # 清理
         for thread in self.camera_threads:
@@ -1166,8 +1314,41 @@ class MultiCameraApp:
         print("MultiCameraApp: 已退出")
 
     def _on_mouse_click(self, event, x, y, flags, param):
-        """鼠标事件回调，用于切换摄像头和滚动缩略图"""
+        """鼠标事件回调，用于切换摄像头、滚动缩略图、收起/展开侧边栏"""
         if event == cv2.EVENT_LBUTTONDOWN:
+            # 获取当前窗口大小
+            window_width = cv2.getWindowImageRect('Multi-Camera Face Recognition')[2]
+
+            # 计算视频区域宽度
+            if self.sidebar_collapsed:
+                video_width = window_width - 30
+            else:
+                video_width = int(window_width * VIDEO_RATIO)
+
+            # 检查是否点击了侧边栏区域
+            if x >= video_width:
+                if self.sidebar_collapsed:
+                    # 点击收起状态的侧边栏，检查是否点击了展开按钮
+                    if self.sidebar_expand_button_rect:
+                        btn = self.sidebar_expand_button_rect
+                        # 将窗口坐标转换为侧边栏内相对坐标
+                        rel_x = x - video_width
+                        if (btn['x'] <= rel_x <= btn['x'] + btn['width'] and
+                            btn['y'] <= y <= btn['y'] + btn['height']):
+                            self.sidebar_collapsed = False
+                            print("MultiCameraApp: 侧边栏已展开")
+                else:
+                    # 检查是否点击了收起按钮
+                    if self.sidebar_collapse_button_rect:
+                        btn = self.sidebar_collapse_button_rect
+                        # 将窗口坐标转换为侧边栏内相对坐标
+                        rel_x = x - video_width
+                        if (btn['x'] <= rel_x <= btn['x'] + btn['width'] and
+                            btn['y'] <= y <= btn['y'] + btn['height']):
+                            self.sidebar_collapsed = True
+                            print("MultiCameraApp: 侧边栏已收起")
+                return
+
             # 检查是否点击了缩略图
             for rect in self.thumbnail_rects:
                 if (rect['x'] <= x <= rect['x'] + rect['width'] and
@@ -1184,7 +1365,10 @@ class MultiCameraApp:
             if num_cameras > 0:
                 # 计算可显示的卡片数量
                 window_width = cv2.getWindowImageRect('Multi-Camera Face Recognition')[2]
-                available_width = int(window_width * VIDEO_RATIO) - THUMBNAIL_MARGIN * 2
+                if self.sidebar_collapsed:
+                    available_width = window_width - 30 - THUMBNAIL_MARGIN * 2
+                else:
+                    available_width = int(window_width * VIDEO_RATIO) - THUMBNAIL_MARGIN * 2
                 visible_count = available_width // (THUMBNAIL_CARD_WIDTH + THUMBNAIL_MARGIN)
                 max_offset = max(0, num_cameras - visible_count)
 

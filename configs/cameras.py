@@ -192,9 +192,9 @@ MAX_THUMBNAIL_HEIGHT = 150
 # Thumbnail margin
 THUMBNAIL_MARGIN = 5
 
-# 识别记录卡片高度
+# 识别记录卡片高度（增加以显示更多信息）
 # Detection record card height
-RECORD_CARD_HEIGHT = 90
+RECORD_CARD_HEIGHT = 100
 RECORD_CARD_MARGIN = 5
 
 
