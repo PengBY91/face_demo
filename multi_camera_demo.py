@@ -206,6 +206,12 @@ class CameraThread(threading.Thread):
         self.frame_index = 0  # 帧计数器
         self.cached_detections = []  # 缓存的识别结果，用于插值显示
 
+        # 畸变校正配置
+        self.undistort_config = camera_config.get('undistort')
+        self.undistort_mapx = None
+        self.undistort_mapy = None
+        self.undistort_roi = None
+
     @property
     def running(self):
         with self._state_lock:
@@ -245,6 +251,70 @@ class CameraThread(threading.Thread):
     def engine_initialized(self, value):
         with self._state_lock:
             self._engine_initialized = value
+
+    def _init_undistort(self, frame_width: int, frame_height: int):
+        """
+        初始化畸变校正映射表
+
+        Args:
+            frame_width: 帧宽度
+            frame_height: 帧高度
+        """
+        if not self.undistort_config or not self.undistort_config.get('enabled'):
+            return
+
+        image_size = (frame_width, frame_height)
+
+        # 获取或估算相机内参
+        cm_config = self.undistort_config.get('camera_matrix')
+        if cm_config:
+            camera_matrix = np.array(cm_config).reshape(3, 3)
+        else:
+            # 自动估算：假设 fx=fy=width, cx,cy=中心
+            fx = fy = frame_width
+            cx, cy = frame_width / 2, frame_height / 2
+            camera_matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]], dtype=np.float64)
+
+        # 畸变系数
+        dist_coeffs = np.array(self.undistort_config.get('dist_coeffs', [0, 0, 0, 0, 0]), dtype=np.float64)
+
+        # 缩放参数
+        alpha = self.undistort_config.get('alpha', 0.5)
+
+        # 计算最优新相机矩阵
+        newcameramtx, self.undistort_roi = cv2.getOptimalNewCameraMatrix(
+            camera_matrix, dist_coeffs, image_size, alpha, image_size
+        )
+
+        # 预计算映射表（提高运行时性能）
+        self.undistort_mapx, self.undistort_mapy = cv2.initUndistortRectifyMap(
+            camera_matrix, dist_coeffs, None, newcameramtx, image_size, cv2.CV_16SC2
+        )
+
+        print(f"CameraThread [{self.camera_name}]: 畸变校正已启用")
+
+    def _apply_undistort(self, frame: np.ndarray) -> np.ndarray:
+        """
+        应用畸变校正
+
+        Args:
+            frame: 原始帧
+
+        Returns:
+            校正后的帧
+        """
+        if self.undistort_mapx is None:
+            return frame
+
+        # 使用预计算的映射表进行快速校正
+        dst = cv2.remap(frame, self.undistort_mapx, self.undistort_mapy, cv2.INTER_LINEAR)
+
+        # 裁剪有效区域（去除黑边）
+        if self.undistort_roi:
+            x, y, w, h = self.undistort_roi
+            dst = dst[y:y+h, x:x+w]
+
+        return dst
 
     def run(self):
         """线程主循环"""
@@ -301,6 +371,8 @@ class CameraThread(threading.Thread):
                         time.sleep(RTSP_VERIFY_INTERVAL)
 
                     if self.connected:
+                        # 初始化畸变校正
+                        self._init_undistort(test_frame.shape[1], test_frame.shape[0])
                         break
                     else:
                         print(f"CameraThread [{self.camera_name}]: 无法读取视频帧")
@@ -377,6 +449,9 @@ class CameraThread(threading.Thread):
             # 跳帧识别：每隔 skip_frames 帧进行一次识别
             # 中间帧使用缓存的识别结果进行显示
             should_detect = (self.frame_index % (self.skip_frames + 1) == 0)
+
+            # 应用畸变校正
+            frame = self._apply_undistort(frame)
 
             if should_detect:
                 # 进行人脸检测和识别
@@ -735,20 +810,25 @@ class MultiCameraApp:
                     thumb_frame = cv2.resize(frame, (thumb_w, thumb_h))
                     canvas[thumb_y:thumb_y + thumb_h, thumb_x:thumb_x + thumb_w] = thumb_frame
                 except Exception as e:
-                    canvas = cv2_add_chinese_text(canvas, "渲染错误",
-                                                 (thumb_x + thumb_w // 2 - 30, thumb_y + thumb_h // 2 - 10),
-                                                 font_size=12, color=(150, 150, 150))
+                    # 渲染错误时显示提示
+                    cv2.rectangle(canvas, (thumb_x, thumb_y), (thumb_x + thumb_w, thumb_y + thumb_h), (40, 40, 50), -1)
+                    cv2.putText(canvas, "Error", (thumb_x + thumb_w // 2 - 25, thumb_y + thumb_h // 2),
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
             else:
-                text = "连接中..." if thread.connected else "离线"
-                canvas = cv2_add_chinese_text(canvas, text,
-                                             (thumb_x + thumb_w // 2 - 30, thumb_y + thumb_h // 2 - 10),
-                                             font_size=14, color=(150, 150, 150))
+                # 无帧时显示状态提示（使用英文避免字体问题）
+                text = "Connecting..." if thread.connected else "Offline"
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
+                text_x = thumb_x + (thumb_w - text_size[0]) // 2
+                text_y = thumb_y + thumb_h // 2
+                cv2.putText(canvas, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
             # 绘制名称标签
             label_y = thumb_y + thumb_h
-            cv2.rectangle(canvas, (thumb_x, label_y), (thumb_x + thumb_w, thumb_y + card_height), (0, 0, 0), -1)
-            canvas = cv2_add_chinese_text(canvas, thread.camera_name, (thumb_x + 5, label_y + 3),
-                                         font_size=12, color=(255, 255, 255))
+            cv2.rectangle(canvas, (thumb_x, label_y), (thumb_x + thumb_w, thumb_y + card_height), (30, 30, 40), -1)
+            # 使用摄像头索引显示（避免中文显示问题）
+            cam_label = f"Cam {i + 1}: {thread.camera_id}"
+            cv2.putText(canvas, cam_label, (thumb_x + 5, label_y + 16),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.35, (220, 220, 220), 1)
 
             # 显示连接状态
             status_color = (0, 255, 0) if thread.connected else (0, 0, 255)
