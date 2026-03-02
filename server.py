@@ -21,6 +21,7 @@ from utils.face_engine import FaceEngine
 from utils.gallery_manager import GalleryManager
 from utils.history_manager import HistoryManager
 from utils.cv_utils import imread_unicode
+from utils.llm_service import get_llm_service, QueryCondition
 
 # 初始化
 app = FastAPI(title="Face DB Manager")
@@ -296,27 +297,110 @@ class NLQueryRequest(BaseModel):
 
 @app.post("/api/query_nl")
 async def query_nl_endpoint(req: NLQueryRequest):
-    """自然语言查询接口"""
-    # 这里集成 LLM 逻辑
-    sql = "SELECT id, person_name, confidence, timestamp, face_image FROM recognition_history"
-    params = []
-    
-    # 模拟处理
-    query_lower = req.query.lower()
-    if "张三" in query_lower:
-        sql += " WHERE person_name = ?"
-        params.append("张三")
-    elif "李四" in query_lower:
-        sql += " WHERE person_name = ?"
-        params.append("李四")
-    
-    sql += " ORDER BY timestamp DESC LIMIT 50"
-    
+    """
+    自然语言查询接口
+
+    使用 LLM 将自然语言查询转换为结构化查询条件
+    支持的查询条件：
+    - 姓名：张三、李四等
+    - 时间：今天、昨天、最近3天、本周等
+    - 置信度：置信度大于90%等
+    - 摄像头：按摄像头名称筛选
+    """
     try:
+        from utils.llm_service import get_llm_service
+
+        # 获取 LLM 服务
+        llm_service = get_llm_service()
+
+        # 检查 LLM 是否可用
+        if not llm_service.enabled:
+            return {
+                "status": "error",
+                "error_code": "LLM_NOT_CONFIGURED",
+                "message": "AI 语义检索服务未配置。请在 llm_config.py 中配置 base_url 和 api_key 后重启服务。",
+                "results": [],
+                "count": 0
+            }
+
+        # 获取可用摄像头列表（用于解析摄像头名称）
+        cameras = []
+        for cam in CAMERAS:
+            if cam.get('enabled', False):
+                cameras.append({
+                    'id': cam['id'],
+                    'name': cam['name']
+                })
+
+        # 解析自然语言查询（LLM 失败时降级到规则解析）
+        try:
+            condition = llm_service.parse_query(req.query, cameras)
+        except Exception:
+            condition = llm_service._rule_based_parse(req.query, cameras)
+
+        # 构建 SQL 查询
+        sql, params = llm_service.build_sql_query(condition)
+
+        # 执行查询
         results = history_manager.execute_query(sql, tuple(params))
-        return {"status": "ok", "results": results, "sql": sql}
+
+        # 格式化结果（execute_query 返回字典列表）
+        formatted_results = []
+        for row in results:
+            formatted_results.append({
+                "id": row.get("id"),
+                "person_name": row.get("person_name"),
+                "confidence": row.get("confidence"),
+                "timestamp": row.get("timestamp"),
+                "camera_id": row.get("camera_id", ""),
+                "camera_name": row.get("camera_name", ""),
+                "image_url": row.get("image_url", f"/api/history_image/{row.get('id')}")
+            })
+
+        # 构建调试信息
+        debug_info = {
+            "original_query": req.query,
+            "parsed_condition": {
+                "person_names": condition.person_names,
+                "confidence_min": condition.confidence_min,
+                "confidence_max": condition.confidence_max,
+                "time_periods": condition.time_periods,
+                "camera_id": condition.camera_id,
+                "limit": condition.limit
+            },
+            "sql": sql,
+            "params": list(params)
+        }
+
+        return {
+            "status": "ok",
+            "results": formatted_results,
+            "count": len(formatted_results),
+            "debug": debug_info
+        }
+
     except Exception as e:
-        raise HTTPException(500, detail=str(e))
+        error_msg = str(e)
+        print(f"服务端: 语义查询失败: {error_msg}")
+
+        # 检查是否是 LLM 未配置错误
+        if "LLM 服务未配置" in error_msg or "LLM_NOT_CONFIGURED" in error_msg:
+            return {
+                "status": "error",
+                "error_code": "LLM_NOT_CONFIGURED",
+                "message": "AI 语义检索服务未配置。请在 llm_config.py 中配置 base_url 和 api_key 后重启服务。",
+                "results": [],
+                "count": 0
+            }
+
+        # 其他错误也返回 JSON 格式
+        return {
+            "status": "error",
+            "error_code": "QUERY_ERROR",
+            "message": f"查询执行失败: {error_msg}",
+            "results": [],
+            "count": 0
+        }
 
 
 if __name__ == "__main__":

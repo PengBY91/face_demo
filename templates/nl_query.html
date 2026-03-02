@@ -144,14 +144,29 @@
           <div class="text-start ps-3 mt-3">
             <span class="small text-muted me-2 fw-bold">试试看：</span>
             <a href="#" class="example-chip">昨天张三的记录</a>
-            <a href="#" class="example-chip">查询置信度大于90%的记录</a>
+            <a href="#" class="example-chip">查询张三和李四的到访记录</a>
+            <a href="#" class="example-chip">昨天和今天的记录</a>
+            <a href="#" class="example-chip">置信度大于90%的记录</a>
           </div>
 
           <div
             id="status"
-            class="text-center mt-4 text-muted small"
+            class="text-center mt-4 small"
             style="min-height: 20px"
           ></div>
+
+          <!-- 查询条件解析展示 -->
+          <div id="parsedInfo" class="mt-4 p-3 glass-panel" style="display: none;">
+            <div class="d-flex align-items-center mb-2">
+              <span class="badge bg-light text-dark">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" class="me-1" viewBox="0 0 16 16">
+                  <path d="M12.854.146a.5.5 0 0 0 .708-.708l-3-3a.5.5 0 0 0-.708.708l1.5 1.5V4.5H3a.5.5 0 0 0 0 1h1.5v1.5l3-3a.5.5 0 0 0 .708.708l-3-3a.5.5 0 0 0-.708-.708l-1.5-1.5V4.5H3a.5.5 0 0 0 0-1h1.5-1.5l3-3a.5.5 0 0 0-.708-.708l3-3a.5.5 0 0 0 .708.708l-1.5 1.5V4.5h3a.5.5 0 0 0 0 1h1.5v1.5l3-3a.5.5 0 0 0 .708.708l3-3a.5.5 0 0 0-.708-.708l-1.5-1.5V4.5H3a.5.5 0 0 0 0-1h1.5-1.5"/>
+                </svg>
+                AI 解析的查询条件
+              </span>
+            </div>
+            <div id="conditionTags" class="d-flex flex-wrap gap-2"></div>
+          </div>
         </div>
       </div>
 
@@ -209,11 +224,68 @@
             });
             const data = await res.json();
 
+            // 检查是否是 LLM 未配置错误
+            if (data.status === "error" && data.error_code === "LLM_NOT_CONFIGURED") {
+              status.innerHTML = '<span class="text-warning">⚠ AI 语义检索服务未配置</span>';
+              resultsContainer.innerHTML = `
+                <div class="col-12 text-center py-5">
+                  <div class="alert alert-warning" role="alert">
+                    <h5 class="alert-heading">⚠ AI 语义检索服务未配置</h5>
+                    <p class="mb-2">请在 <code>llm_config.py</code> 文件中配置以下内容后重启服务：</p>
+                    <ul class="text-start mt-2 mb-0" style="list-style: none; padding: 0;">
+                      <li><code>base_url</code>: LLM API 地址（如：https://api.deepseek.com/v1）</li>
+                      <li><code>api_key</code>: API 密钥</li>
+                      <li><code>model</code>: 使用的模型名称（如：deepseek-chat）</li>
+                    </ul>
+                  </div>
+                </div>`;
+              return;
+            }
+
             status.textContent = `检索完成，为您找到 ${data.results.length} 条相关记录。`;
 
-            if (data.sql) {
-              sqlDisplay.textContent = data.sql;
+            if (data.debug && data.debug.sql) {
+              sqlDisplay.textContent = data.debug.sql;
               sqlContainer.classList.remove("d-none");
+            }
+
+            // 显示解析条件
+            if (data.debug && data.debug.parsed_condition) {
+              const cond = data.debug.parsed_condition;
+              const tags = [];
+
+              // 支持多人员
+              if (cond.person_names && cond.person_names.length > 0) {
+                const namesStr = cond.person_names.join('、');
+                tags.push(`<span class="badge bg-primary">姓名: ${namesStr}</span>`);
+              } else if (cond.person_name) {
+                tags.push(`<span class="badge bg-primary">姓名: ${cond.person_name}</span>`);
+              }
+
+              if (cond.confidence_min) tags.push(`<span class="badge bg-success">置信度 ≥ ${(cond.confidence_min * 100).toFixed(0)}%</span>`);
+
+              // 支持多时间段
+              if (cond.time_periods && cond.time_periods.length > 0) {
+                cond.time_periods.forEach((period, idx) => {
+                  const start = period[0].split(' ')[0];
+                  const end = period[1].split(' ')[0];
+                  if (start === end) {
+                    tags.push(`<span class="badge bg-info">${start}</span>`);
+                  } else {
+                    tags.push(`<span class="badge bg-info">${start} ~ ${end}</span>`);
+                  }
+                });
+              } else {
+                if (cond.start_time) tags.push(`<span class="badge bg-info">开始: ${cond.start_time}</span>`);
+                if (cond.end_time) tags.push(`<span class="badge bg-info">结束: ${cond.end_time}</span>`);
+              }
+
+              if (cond.camera_id) tags.push(`<span class="badge bg-secondary">摄像头: ${cond.camera_id}</span>`);
+
+              if (tags.length > 0) {
+                document.getElementById('parsedInfo').style.display = 'block';
+                document.getElementById('conditionTags').innerHTML = tags.join(' ');
+              }
             }
 
             data.results.forEach((row, index) => {
@@ -236,6 +308,7 @@
                                           <path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm7-8A7 7 0 1 1 1 8a7 7 0 0 1 14 0z"/>
                                         </svg>
                                         记录时间：${row.timestamp}
+                                        ${row.camera_name ? `<span class="ms-3">摄像头：${row.camera_name}</span>` : ""}
                                     </div>
                                 </div>
                                 <button class="btn btn-sm btn-outline-primary d-none d-md-block px-3">查看详情</button>

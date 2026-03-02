@@ -36,7 +36,7 @@ class HistoryManager:
         """初始化 SQLite 数据库表架构"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            # 创建表
+            # 创建表（如果不存在）
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS recognition_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -48,12 +48,8 @@ class HistoryManager:
                     camera_name TEXT DEFAULT ''
                 )
             ''')
-            # 添加索引以优化查询
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_name ON recognition_history(person_name)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_timestamp ON recognition_history(timestamp)')
-            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_camera ON recognition_history(camera_id)')
 
-            # 为旧表添加新字段（如果不存在）
+            # 为旧表添加新字段（如果不存在）- 必须在创建索引之前
             try:
                 cursor.execute("ALTER TABLE recognition_history ADD COLUMN camera_id TEXT DEFAULT ''")
             except sqlite3.OperationalError:
@@ -62,6 +58,14 @@ class HistoryManager:
                 cursor.execute("ALTER TABLE recognition_history ADD COLUMN camera_name TEXT DEFAULT ''")
             except sqlite3.OperationalError:
                 pass  # 字段已存在
+
+            # 添加索引以优化查询（在确保列存在之后）
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_name ON recognition_history(person_name)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_timestamp ON recognition_history(timestamp)')
+            try:
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_history_camera ON recognition_history(camera_id)')
+            except sqlite3.OperationalError:
+                pass  # 索引创建失败（列可能仍不存在）
 
             conn.commit()
 
@@ -200,6 +204,7 @@ class HistoryManager:
         """执行自定义 SQL 查询 (用于 AI 搜索)"""
         if not sql.strip().upper().startswith("SELECT"):
             raise ValueError("Only SELECT queries are allowed.")
+
         results = []
         try:
             with sqlite3.connect(self.db_path) as conn:

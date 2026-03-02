@@ -25,6 +25,7 @@ ENV/
 *.swp
 *.swo
 .DS_Store
+llm_config.ini
 
 # === Project Specific: Models ===
 # Ignore large model weights by default

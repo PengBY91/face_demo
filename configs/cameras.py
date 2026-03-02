@@ -194,7 +194,7 @@ THUMBNAIL_MARGIN = 5
 
 # 识别记录卡片高度（增加以显示更多信息）
 # Detection record card height
-RECORD_CARD_HEIGHT = 100
+RECORD_CARD_HEIGHT = 110
 RECORD_CARD_MARGIN = 5
 
 

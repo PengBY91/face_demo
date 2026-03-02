@@ -10,6 +10,7 @@ Architecture:
 - 每路摄像头独立线程处理，拥有独立的 FaceEngine 实例
 - 主线程负责 UI 渲染
 - 共享 GalleryManager（只读，线程安全）
+- 同时启动 Web 服务端（端口 8008），提供历史记录查询和人脸库管理功能
 """
 import cv2
 import numpy as np
@@ -19,6 +20,7 @@ import time
 import queue
 import base64
 import requests
+import asyncio
 from sklearn.metrics.pairwise import cosine_similarity
 from PIL import Image, ImageDraw, ImageFont
 from datetime import datetime
@@ -1137,19 +1139,19 @@ class MultiCameraApp:
         显示信息：
         - 左侧：抓拍人脸头像
         - 中间：摄像头名称、人员姓名、置信度、完整日期时间
-        - 右侧：底库照片（如有）
+        - 右侧：底库照片（如有空间）
         """
         # 卡片背景
         cv2.rectangle(canvas, (x, y), (x + width, y + height), (40, 40, 55), -1)
         cv2.rectangle(canvas, (x, y), (x + width, y + height), (60, 60, 80), 1)
 
         # 计算尺寸
-        snapshot_size = height - 16  # 抓拍图大小
         margin = 8
+        snapshot_size = min(height - margin * 2, 70)  # 抓拍图大小，最大 70
 
         # ===== 左侧：抓拍人脸头像 =====
         snapshot_x = x + margin
-        snapshot_y = y + margin // 2
+        snapshot_y = y + (height - snapshot_size) // 2  # 垂直居中
         try:
             snapshot = cv2.resize(record.snapshot, (snapshot_size, snapshot_size))
             canvas[snapshot_y:snapshot_y + snapshot_size, snapshot_x:snapshot_x + snapshot_size] = snapshot
@@ -1159,45 +1161,53 @@ class MultiCameraApp:
         except:
             pass
 
-        # ===== 中间：信息区域 =====
-        info_x = snapshot_x + snapshot_size + 12
-        info_y = y + 6
+        # ===== 右侧：底库照片（仅在宽度足够时显示） =====
+        gallery_size = snapshot_size
+        show_gallery = record.gallery_img is not None and width > 250  # 宽度大于 250 才显示底库照片
+        gallery_x = x + width - gallery_size - margin if show_gallery else width
 
-        # 摄像头名称（带图标背景）
-        cam_text = f"[{record.camera_name}]"
-        canvas = cv2_add_chinese_text(canvas, cam_text,
-                                     (info_x, info_y), font_size=13, color=(100, 200, 255))
-        info_y += 18
-
-        # 人员姓名（高亮显示）
-        canvas = cv2_add_chinese_text(canvas, record.name,
-                                     (info_x, info_y), font_size=20, color=(0, 255, 100))
-        info_y += 26
-
-        # 置信度
-        score_text = f"Score: {record.score:.2%}"
-        cv2.putText(canvas, score_text, (info_x, info_y + 5),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1)
-        info_y += 18
-
-        # 完整识别时间
-        time_str = datetime.fromtimestamp(record.timestamp).strftime("%Y-%m-%d %H:%M:%S")
-        canvas = cv2_add_chinese_text(canvas, time_str,
-                                     (info_x, info_y), font_size=12, color=(150, 150, 150))
-
-        # ===== 右侧：底库照片（如有） =====
-        if record.gallery_img is not None:
-            gallery_size = height - 16
+        if show_gallery:
             try:
                 gallery_img = cv2.resize(record.gallery_img, (gallery_size, gallery_size))
-                gallery_x = x + width - gallery_size - margin
-                gallery_y = y + margin // 2
+                gallery_y = y + (height - gallery_size) // 2  # 垂直居中
                 canvas[gallery_y:gallery_y + gallery_size, gallery_x:gallery_x + gallery_size] = gallery_img
                 # 底库照片边框
                 cv2.rectangle(canvas, (gallery_x, gallery_y),
                             (gallery_x + gallery_size, gallery_y + gallery_size), (0, 200, 100), 2)
             except:
-                pass
+                show_gallery = False
+                gallery_x = width
+
+        # ===== 中间：信息区域 =====
+        info_x = snapshot_x + snapshot_size + 10
+        info_max_x = gallery_x - margin if show_gallery else x + width - margin
+        info_width = info_max_x - info_x
+
+        # 只有宽度足够时才显示信息
+        if info_width > 60:
+            info_y = y + 8
+
+            # 摄像头名称
+            cam_text = f"[{record.camera_name}]"
+            canvas = cv2_add_chinese_text(canvas, cam_text,
+                                         (info_x, info_y), font_size=12, color=(100, 200, 255))
+            info_y += 18
+
+            # 人员姓名（高亮显示）
+            canvas = cv2_add_chinese_text(canvas, record.name,
+                                         (info_x, info_y), font_size=18, color=(0, 255, 100))
+            info_y += 24
+
+            # 置信度
+            score_text = f"Score: {record.score:.2%}"
+            cv2.putText(canvas, score_text, (info_x, info_y + 4),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+            info_y += 18
+
+            # 完整识别时间
+            time_str = datetime.fromtimestamp(record.timestamp).strftime("%m-%d %H:%M:%S")
+            cv2.putText(canvas, time_str, (info_x, info_y + 4),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.4, (150, 150, 150), 1)
 
     def _render_status_bar(self, canvas: np.ndarray, width: int, height: int):
         """渲染底部状态栏"""
@@ -1372,13 +1382,45 @@ class MultiCameraApp:
                 visible_count = available_width // (THUMBNAIL_CARD_WIDTH + THUMBNAIL_MARGIN)
                 max_offset = max(0, num_cameras - visible_count)
 
-                # 滚动方向
-                if cv2.getMouseWheelDelta(flags) > 0:
+                # 滚动方向（兼容不同 OpenCV 版本）
+                # flags > 0 表示向上滚动，flags < 0 表示向下滚动
+                scroll_delta = flags if flags != 0 else 0
+                # 检查高位符号（某些版本 getMouseWheelDelta 不可用）
+                if hasattr(cv2, 'getMouseWheelDelta'):
+                    scroll_delta = cv2.getMouseWheelDelta(flags)
+
+                if scroll_delta > 0:
                     self.thumbnail_scroll_offset = max(0, self.thumbnail_scroll_offset - 1)
                 else:
                     self.thumbnail_scroll_offset = min(max_offset, self.thumbnail_scroll_offset + 1)
 
 
+def run_web_server(port=8008):
+    """
+    在后台线程中运行 Web 服务器
+    复用 server.py 的 FastAPI 应用
+
+    Args:
+        port: Web 服务器端口
+    """
+    import uvicorn
+    # 导入 server 模块的 app 对象，复用所有路由和初始化逻辑
+    from server import app as web_app
+
+    print(f"Web服务端: 启动在 http://{SERVER_HOST}:{port}")
+    uvicorn.run(web_app, host=SERVER_HOST, port=port)
+
+
 if __name__ == "__main__":
+    # 启动 Web 服务器（在后台线程中）
+    web_port = 8008
+    web_thread = threading.Thread(target=run_web_server, args=(web_port,), daemon=True)
+    web_thread.start()
+    print(f"Web服务端已在后台启动，访问地址: http://127.0.0.1:{web_port}")
+
+    # 等待 Web 服务器初始化
+    time.sleep(2)
+
+    # 启动多路摄像头应用
     app = MultiCameraApp()
     app.run()
