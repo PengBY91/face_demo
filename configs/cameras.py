@@ -65,6 +65,18 @@ CAMERAS = [
         "password": "admin",
         "stream_path": "/livestream/12",
         "undistort": None
+    },
+    {
+        "id": "cam_04",
+        "name": "192.168.10.109",
+        "enabled": True,
+        "type": "rtsp",
+        "host": "192.168.10.109",
+        "port": 554,
+        "username": "admin",
+        "password": "hksbADMIN",
+        "stream_path": "/0-0",
+        "undistort": None
     }
 ]
 
