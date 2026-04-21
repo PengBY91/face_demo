@@ -27,43 +27,55 @@ CAMERAS = [
         # 畸变校正参数（None 表示不校正）
         "undistort": None
     },
-    {
-        "id": "cam_02",
-        "name": "192.168.10.107",
-        "enabled": True,
-        "type": "rtsp",
-        "host": "192.168.10.107",
-        "port": 554,
-        "username": "admin",
-        "password": "123456",
-        "stream_path": "/h264/ch1/main/av_stream",
-        # 畸变校正参数（桶形畸变）
-        # k1, k2, k3: 径向畸变系数（负值校正桶形畸变）
-        # p1, p2: 切向畸变系数
-        # 使用 tools/calibrate_camera.py 标定获取精确参数
-        "undistort": {
-            "enabled": True,
-            # 相机内参矩阵 [fx, 0, cx; 0, fy, cy; 0, 0, 1]
-            # 如果为 None，将根据图像尺寸自动估算
-            "camera_matrix": None,
-            # 畸变系数 [k1, k2, p1, p2, k3]
-            # 桶形畸变: k1, k2 通常为负值
-            # 这些是初始估算值，建议使用标定工具获取精确值
-            "dist_coeffs": [-0.2, 0.1, 0, 0, -0.05],
-            # 缩放比例 (0-1)，用于裁剪黑边
-            "alpha": 0.5
-        }
-    },
-    {
+    # {
+    #     "id": "cam_02",
+    #     "name": "192.168.10.107",
+    #     "enabled": True,
+    #     "type": "rtsp",
+    #     "host": "192.168.10.107",
+    #     "port": 554,
+    #     "username": "admin",
+    #     "password": "123456",
+    #     "stream_path": "/h264/ch1/main/av_stream",
+    #     # 畸变校正参数（桶形畸变）
+    #     # k1, k2, k3: 径向畸变系数（负值校正桶形畸变）
+    #     # p1, p2: 切向畸变系数
+    #     # 使用 tools/calibrate_camera.py 标定获取精确参数
+    #     "undistort": {
+    #         "enabled": True,
+    #         # 相机内参矩阵 [fx, 0, cx; 0, fy, cy; 0, 0, 1]
+    #         # 如果为 None，将根据图像尺寸自动估算
+    #         "camera_matrix": None,
+    #         # 畸变系数 [k1, k2, p1, p2, k3]
+    #         # 桶形畸变: k1, k2 通常为负值
+    #         # 这些是初始估算值，建议使用标定工具获取精确值
+    #         "dist_coeffs": [-0.2, 0.1, 0, 0, -0.05],
+    #         # 缩放比例 (0-1)，用于裁剪黑边
+    #         "alpha": 0.5
+    #     }
+    # },
+    # {
+    #     "id": "cam_03",
+    #     "name": "192.168.10.108",
+    #     "enabled": True,
+    #     "type": "rtsp",
+    #     "host": "192.168.10.108",
+    #     "port": 554,
+    #     "username": "admin",
+    #     "password": "admin",
+    #     "stream_path": "/livestream/12",
+    #     "undistort": None
+    # },
+        {
         "id": "cam_03",
         "name": "192.168.10.108",
         "enabled": True,
         "type": "rtsp",
         "host": "192.168.10.108",
         "port": 554,
-        "username": "admin",
-        "password": "admin",
-        "stream_path": "/livestream/12",
+        "username": "",
+        "password": "",
+        "stream_path": "/livestream/11",
         "undistort": None
     },
     {
@@ -225,7 +237,11 @@ def get_camera_url(camera: dict) -> str:
     Returns:
         RTSP URL 字符串
     """
-    return f"rtsp://{camera['username']}:{camera['password']}@{camera['host']}:{camera['port']}{camera['stream_path']}"
+    username = camera.get('username', '')
+    password = camera.get('password', '')
+    if username and password:
+        return f"rtsp://{username}:{password}@{camera['host']}:{camera['port']}{camera['stream_path']}"
+    return f"rtsp://{camera['host']}:{camera['port']}{camera['stream_path']}"
 
 
 def get_enabled_cameras() -> list:

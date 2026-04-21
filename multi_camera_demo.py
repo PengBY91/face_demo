@@ -44,7 +44,6 @@ from configs.cameras import (
     MAX_BEST_RESULTS, REQUEST_TIMEOUT, FLUSH_INTERVAL, SKIP_FRAMES,
     # 队列和显示配置
     DETECTION_QUEUE_SIZE, MAX_DISPLAY_RECORDS,
-    ENGINE_INIT_TIMEOUT, ENGINE_INIT_CHECK_INTERVAL, CAMERA_START_DELAY,
     # UI 布局配置
     WINDOW_DEFAULT_WIDTH, WINDOW_DEFAULT_HEIGHT,
     WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT,
@@ -182,6 +181,7 @@ class CameraThread(threading.Thread):
         self._running = True
         self._connected = False
         self._fps = 0.0
+        self._last_frame_time = 0.0
         self._state_lock = threading.Lock()
 
         self.latest_frame = None
@@ -243,6 +243,16 @@ class CameraThread(threading.Thread):
     def fps(self, value):
         with self._state_lock:
             self._fps = value
+
+    @property
+    def last_frame_time(self):
+        with self._state_lock:
+            return self._last_frame_time
+
+    @last_frame_time.setter
+    def last_frame_time(self, value):
+        with self._state_lock:
+            self._last_frame_time = value
 
     @property
     def engine_initialized(self):
@@ -342,161 +352,160 @@ class CameraThread(threading.Thread):
                 self.running = False
                 return
 
-        # RTSP 连接重试机制
-        max_retries = RTSP_MAX_RETRIES
-        retry_delay = RTSP_RETRY_DELAY
-        cap = None
-
-        for retry in range(max_retries):
-            if not self.running:
-                return
-
-            print(f"CameraThread [{self.camera_name}]: 正在连接 {rtsp_display_url}... (尝试 {retry + 1}/{max_retries})")
-
-            try:
-                # 使用 FFMPEG 后端，设置超时参数
-                cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
-                cap.set(cv2.CAP_PROP_BUFFERSIZE, RTSP_BUFFER_SIZE)
-                cap.set(cv2.CAP_PROP_FPS, RTSP_EXPECTED_FPS)
-
-                # 等待连接建立
-                time.sleep(RTSP_CONNECT_WAIT)
-
-                if cap.isOpened():
-                    # 尝试读取多帧验证连接（有些摄像头需要预热）
-                    for _ in range(RTSP_VERIFY_READS):
-                        ret, test_frame = cap.read()
-                        if ret and test_frame is not None:
-                            print(f"CameraThread [{self.camera_name}]: 连接成功! 分辨率: {test_frame.shape[1]}x{test_frame.shape[0]}")
-                            self.connected = True
-                            break
-                        time.sleep(RTSP_VERIFY_INTERVAL)
-
-                    if self.connected:
-                        # 初始化畸变校正
-                        self._init_undistort(test_frame.shape[1], test_frame.shape[0])
-                        break
-                    else:
-                        print(f"CameraThread [{self.camera_name}]: 无法读取视频帧")
-                        cap.release()
-                        cap = None
-                else:
-                    print(f"CameraThread [{self.camera_name}]: 无法打开视频流")
-                    if cap:
-                        cap.release()
-                        cap = None
-
-            except Exception as e:
-                print(f"CameraThread [{self.camera_name}]: 连接异常: {e}")
-                if cap:
-                    cap.release()
-                    cap = None
-
-            if retry < max_retries - 1:
-                print(f"CameraThread [{self.camera_name}]: {retry_delay}秒后重试...")
-                time.sleep(retry_delay)
-
-        if not self.connected:
-            print(f"CameraThread [{self.camera_name}]: 达到最大重试次数，连接失败!")
-            if cap:
-                cap.release()
-            self.running = False
-            return
-
-        # 主循环
+        # 持久重连外层循环：线程不会因 RTSP 连接失败而永久终止
         while self.running:
-            ret, frame = cap.read()
-            if not ret:
-                print(f"CameraThread [{self.camera_name}]: 读取帧失败，尝试重连...")
-                cap.release()
-                self.connected = False
+            cap = None
+            self.connected = False
 
-                # 重连逻辑
-                reconnect_success = False
-                for retry in range(RTSP_RECONNECT_RETRIES):
-                    time.sleep(RTSP_CONNECT_WAIT)
-                    print(f"CameraThread [{self.camera_name}]: 重连中... (尝试 {retry + 1}/{RTSP_RECONNECT_RETRIES})")
+            # === RTSP 连接阶段 ===
+            for retry in range(RTSP_MAX_RETRIES):
+                if not self.running:
+                    return
+
+                print(f"CameraThread [{self.camera_name}]: 正在连接 {rtsp_display_url}... (尝试 {retry + 1}/{RTSP_MAX_RETRIES})")
+
+                try:
                     cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, RTSP_BUFFER_SIZE)
+                    cap.set(cv2.CAP_PROP_FPS, RTSP_EXPECTED_FPS)
+
                     time.sleep(RTSP_CONNECT_WAIT)
+
                     if cap.isOpened():
                         for _ in range(RTSP_VERIFY_READS):
                             ret, test_frame = cap.read()
-                            if ret:
+                            if ret and test_frame is not None:
+                                print(f"CameraThread [{self.camera_name}]: 连接成功! 分辨率: {test_frame.shape[1]}x{test_frame.shape[0]}")
                                 self.connected = True
-                                reconnect_success = True
-                                print(f"CameraThread [{self.camera_name}]: 重连成功!")
                                 break
                             time.sleep(RTSP_VERIFY_INTERVAL)
-                        if reconnect_success:
+
+                        if self.connected:
+                            self._init_undistort(test_frame.shape[1], test_frame.shape[0])
                             break
+                        else:
+                            print(f"CameraThread [{self.camera_name}]: 无法读取视频帧")
+                            cap.release()
+                            cap = None
+                    else:
+                        print(f"CameraThread [{self.camera_name}]: 无法打开视频流")
+                        if cap:
+                            cap.release()
+                            cap = None
+
+                except Exception as e:
+                    print(f"CameraThread [{self.camera_name}]: 连接异常: {e}")
                     if cap:
                         cap.release()
                         cap = None
 
-                if not reconnect_success:
-                    print(f"CameraThread [{self.camera_name}]: 重连失败，停止线程")
-                    break
+                if retry < RTSP_MAX_RETRIES - 1:
+                    print(f"CameraThread [{self.camera_name}]: {RTSP_RETRY_DELAY}秒后重试...")
+                    time.sleep(RTSP_RETRY_DELAY)
+
+            # 连接失败：不终止线程，等待后重新尝试
+            if not self.connected:
+                if cap:
+                    cap.release()
+                print(f"CameraThread [{self.camera_name}]: 连接失败，{RTSP_RETRY_DELAY}秒后重新尝试...")
+                time.sleep(RTSP_RETRY_DELAY)
                 continue
 
-            # 更新 FPS
-            self.frame_count += 1
-            self.frame_index += 1
-            current_time = time.time()
-            if current_time - self.last_fps_time >= 1.0:
-                self.fps = self.frame_count / (current_time - self.last_fps_time)
-                self.frame_count = 0
-                self.last_fps_time = current_time
+            # === 主读取循环 ===
+            while self.running:
+                ret, frame = cap.read()
+                if not ret:
+                    print(f"CameraThread [{self.camera_name}]: 读取帧失败，尝试重连...")
+                    cap.release()
+                    self.connected = False
 
-            # 跳帧识别：每隔 skip_frames 帧进行一次识别
-            # 中间帧使用缓存的识别结果进行显示
-            should_detect = (self.frame_index % (self.skip_frames + 1) == 0)
+                    reconnect_success = False
+                    for retry in range(RTSP_RECONNECT_RETRIES):
+                        time.sleep(RTSP_CONNECT_WAIT)
+                        print(f"CameraThread [{self.camera_name}]: 重连中... (尝试 {retry + 1}/{RTSP_RECONNECT_RETRIES})")
+                        cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, RTSP_BUFFER_SIZE)
+                        time.sleep(RTSP_CONNECT_WAIT)
+                        if cap.isOpened():
+                            for _ in range(RTSP_VERIFY_READS):
+                                ret, test_frame = cap.read()
+                                if ret:
+                                    self.connected = True
+                                    reconnect_success = True
+                                    print(f"CameraThread [{self.camera_name}]: 重连成功!")
+                                    break
+                                time.sleep(RTSP_VERIFY_INTERVAL)
+                            if reconnect_success:
+                                break
+                        if cap:
+                            cap.release()
+                            cap = None
 
-            # 应用畸变校正
-            frame = self._apply_undistort(frame)
+                    if not reconnect_success:
+                        if cap:
+                            cap.release()
+                        print(f"CameraThread [{self.camera_name}]: 重连失败，回到初始连接...")
+                        break  # 跳出内层循环，回到外层重连循环
+                    continue
 
-            if should_detect:
-                # 进行人脸检测和识别
-                try:
-                    faces = self.engine.detect_and_extract(frame)
-                    detections = []
+                # 更新 FPS
+                self.frame_count += 1
+                self.frame_index += 1
+                current_time = time.time()
+                if current_time - self.last_fps_time >= 1.0:
+                    self.fps = self.frame_count / (current_time - self.last_fps_time)
+                    self.frame_count = 0
+                    self.last_fps_time = current_time
 
-                    for face in faces:
-                        bbox = face['bbox']
-                        embedding = face['embedding']
-                        aligned_face = face['aligned_face']
+                # 跳帧识别：每隔 skip_frames 帧进行一次识别
+                # 中间帧使用缓存的识别结果进行显示
+                should_detect = (self.frame_index % (self.skip_frames + 1) == 0)
 
-                        # 识别
-                        name, score, is_suspicious = self._identify(embedding)
+                # 应用畸变校正
+                frame = self._apply_undistort(frame)
 
-                        # 记录检测结果
-                        detection = {
-                            'bbox': bbox,
-                            'name': name,
-                            'score': score,
-                            'is_suspicious': is_suspicious,
-                            'aligned_face': aligned_face
-                        }
-                        detections.append(detection)
+                if should_detect:
+                    # 进行人脸检测和识别
+                    try:
+                        faces = self.engine.detect_and_extract(frame)
+                        detections = []
 
-                        # 生成识别记录（非 Unknown 且非疑似）
-                        if name != "Unknown" and not is_suspicious:
-                            self._process_detection(name, score, aligned_face)
+                        for face in faces:
+                            bbox = face['bbox']
+                            embedding = face['embedding']
+                            aligned_face = face['aligned_face']
 
-                    # 更新缓存
-                    self.cached_detections = detections
-                    self.latest_detections = detections
+                            # 识别
+                            name, score, is_suspicious = self._identify(embedding)
 
-                except Exception as e:
-                    print(f"CameraThread [{self.camera_name}]: 处理异常: {e}")
-            else:
-                # 使用缓存的识别结果（插值显示）
-                self.latest_detections = self.cached_detections
+                            # 记录检测结果
+                            detection = {
+                                'bbox': bbox,
+                                'name': name,
+                                'score': score,
+                                'is_suspicious': is_suspicious,
+                                'aligned_face': aligned_face
+                            }
+                            detections.append(detection)
 
-            # 始终更新最新帧（用于显示）
-            self.latest_frame = frame.copy()
+                            # 生成识别记录（非 Unknown 且非疑似）
+                            if name != "Unknown" and not is_suspicious:
+                                self._process_detection(name, score, aligned_face)
 
-        cap.release()
+                        # 更新缓存
+                        self.cached_detections = detections
+                        self.latest_detections = detections
+
+                    except Exception as e:
+                        print(f"CameraThread [{self.camera_name}]: 处理异常: {e}")
+                else:
+                    # 使用缓存的识别结果（插值显示）
+                    self.latest_detections = self.cached_detections
+
+                # 始终更新最新帧（用于显示）
+                self.latest_frame = frame.copy()
+                self.last_frame_time = time.time()
+
         print(f"CameraThread [{self.camera_name}]: 已停止")
 
     def _identify(self, face_embedding: np.ndarray) -> Tuple[str, float, bool]:
@@ -651,6 +660,13 @@ class MultiCameraApp:
         self.selected_camera_index = 0  # 当前选中的摄像头索引
         self.thumbnail_scroll_offset = 0  # 缩略图滚动偏移量
 
+        # 自动轮询配置
+        self.auto_poll_enabled = True  # 是否启用自动轮询
+        self.auto_poll_interval = 10.0  # 轮询切换间隔（秒）
+        self.auto_poll_timeout = 1.0   # 单摄像头无响应超时（秒）
+        self._last_poll_time = time.time()
+        self._manual_select_time = 0.0  # 上次手动选择时间
+
         # 侧边栏状态（收起/展开）
         self.sidebar_collapsed = False
         self.sidebar_collapse_button_rect = None  # 收起按钮区域
@@ -692,7 +708,7 @@ class MultiCameraApp:
             self._load_gallery()
 
     def _start_cameras(self):
-        """启动所有启用的摄像头线程"""
+        """启动所有启用的摄像头线程（并行启动，错开初始化）"""
         cameras = get_enabled_cameras()
         print(f"MultiCameraApp: 启动 {len(cameras)} 路摄像头...")
 
@@ -707,22 +723,56 @@ class MultiCameraApp:
             thread.start()
             self.camera_threads.append(thread)
 
-            # 每个线程启动后等待一段时间，避免同时初始化 GPU 资源
-            # 第一个线程启动后等待 FaceEngine 初始化完成
+            # 错开启动，避免同时初始化 GPU 资源
             if i < len(cameras) - 1:
-                print(f"MultiCameraApp: 等待 {cam_config['name']} 初始化完成...")
-                # 等待该线程的 FaceEngine 初始化完成
-                max_wait_count = int(ENGINE_INIT_TIMEOUT / ENGINE_INIT_CHECK_INTERVAL)
-                wait_count = 0
-                while not thread.engine_initialized and wait_count < max_wait_count:
-                    time.sleep(ENGINE_INIT_CHECK_INTERVAL)
-                    wait_count += 1
-                if thread.engine_initialized:
-                    print(f"MultiCameraApp: {cam_config['name']} 初始化完成，启动下一个...")
-                else:
-                    print(f"MultiCameraApp: {cam_config['name']} 初始化超时，继续启动下一个...")
-                # 额外等待确保资源释放
-                time.sleep(CAMERA_START_DELAY)
+                time.sleep(0.5)
+
+    def _auto_poll_camera(self):
+        """自动轮询摄像头：当前摄像头超时或轮询间隔到达时切换到下一个有画面的摄像头"""
+        num_cameras = len(self.camera_threads)
+        if num_cameras <= 1:
+            return
+
+        now = time.time()
+        current_thread = self.camera_threads[self.selected_camera_index]
+
+        # 判断是否需要切换
+        should_switch = False
+
+        # 条件1：当前摄像头无响应超过超时时间（有帧但超时，或无帧且线程在重试）
+        if current_thread.latest_frame is not None:
+            frame_age = now - current_thread.last_frame_time
+            if frame_age > self.auto_poll_timeout:
+                should_switch = True
+        elif not current_thread.connected:
+            # 当前摄像头未连接，立即切换
+            should_switch = True
+
+        # 条件2：轮询间隔到达（且不在手动选择后的短时间内）
+        if (not should_switch and
+            self.auto_poll_enabled and
+            now - self._last_poll_time >= self.auto_poll_interval and
+            now - self._manual_select_time > self.auto_poll_interval):
+            should_switch = True
+
+        if not should_switch:
+            return
+
+        # 从当前位置向后查找下一个有新鲜画面的摄像头
+        for i in range(1, num_cameras + 1):
+            next_idx = (self.selected_camera_index + i) % num_cameras
+            next_thread = self.camera_threads[next_idx]
+
+            # 检查该摄像头是否有新鲜画面（帧年龄 < 超时时间）
+            if (next_thread.latest_frame is not None and
+                now - next_thread.last_frame_time <= self.auto_poll_timeout):
+                if next_idx != self.selected_camera_index:
+                    self.selected_camera_index = next_idx
+                    self._last_poll_time = now
+                break
+        else:
+            # 所有摄像头都没有新鲜画面，重置计时器避免频繁切换
+            self._last_poll_time = now
 
     def _process_detection_queue(self):
         """处理识别记录队列"""
@@ -830,7 +880,7 @@ class MultiCameraApp:
                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
             else:
                 # 无帧时显示状态提示（使用英文避免字体问题）
-                text = "Connecting..." if thread.connected else "Offline"
+                text = "Connecting..." if thread.is_alive() else "Offline"
                 text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)[0]
                 text_x = thumb_x + (thumb_w - text_size[0]) // 2
                 text_y = thumb_y + thumb_h // 2
@@ -844,8 +894,13 @@ class MultiCameraApp:
             cv2.putText(canvas, cam_label, (thumb_x + 5, label_y + 16),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.35, (220, 220, 220), 1)
 
-            # 显示连接状态
-            status_color = (0, 255, 0) if thread.connected else (0, 0, 255)
+            # 显示连接状态（绿=在线，橙=连接中，红=离线）
+            if thread.connected:
+                status_color = (0, 255, 0)
+            elif thread.is_alive():
+                status_color = (0, 165, 255)  # 橙色：正在连接/重连
+            else:
+                status_color = (0, 0, 255)
             cv2.circle(canvas, (thumb_x + thumb_w - 12, thumb_y + 12), 5, status_color, -1)
 
             # 保存位置信息
@@ -971,7 +1026,12 @@ class MultiCameraApp:
                                              font_size=20, color=(255, 255, 255))
 
             # 显示 FPS 和连接状态
-            status_text = f"FPS: {thread.fps:.1f}" if thread.connected else "离线"
+            if thread.connected:
+                status_text = f"FPS: {thread.fps:.1f}"
+            elif thread.is_alive():
+                status_text = "Connecting..."
+            else:
+                status_text = "Offline"
             cv2.putText(main_frame, status_text, (width - 150, 25),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
         else:
@@ -979,7 +1039,7 @@ class MultiCameraApp:
             main_frame = np.zeros((height, width, 3), dtype=np.uint8)
             cv2.rectangle(main_frame, (0, 0), (width, height), (50, 50, 50), -1)
 
-            text = "连接中..." if thread.connected else "连接失败"
+            text = "连接中..." if thread.is_alive() else "连接失败"
             main_frame = cv2_add_chinese_text(main_frame, text, (width // 2 - 50, height // 2),
                                              font_size=28, color=(200, 200, 200))
             main_frame = cv2_add_chinese_text(main_frame, thread.camera_name, (10, 10),
@@ -1253,6 +1313,9 @@ class MultiCameraApp:
         cv2.setMouseCallback('Multi-Camera Face Recognition', self._on_mouse_click)
 
         while self.running:
+            # 自动轮询摄像头
+            self._auto_poll_camera()
+
             # 处理识别记录队列
             self._process_detection_queue()
 
@@ -1365,6 +1428,8 @@ class MultiCameraApp:
                     rect['y'] <= y <= rect['y'] + rect['height']):
                     if self.selected_camera_index != rect['index']:
                         self.selected_camera_index = rect['index']
+                        self._manual_select_time = time.time()
+                        self._last_poll_time = time.time()
                         camera_name = self.camera_threads[rect['index']].camera_name
                         print(f"MultiCameraApp: 切换到摄像头 [{camera_name}]")
                     break
