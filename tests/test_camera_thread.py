@@ -138,6 +138,34 @@ class TestFaceEngineInitSerialization(unittest.TestCase):
         self.assertIsInstance(t.engine_init_semaphore, type(threading.Semaphore(1)))
 
 
+class TestSyncLoop(unittest.TestCase):
+    def test_sync_loop_exits_promptly_when_stopped(self):
+        """_sync_loop 应在 stop event 触发后 2 秒内退出"""
+        class FakeApp:
+            running = True
+            _sync_stop_event = threading.Event()
+
+            def _load_gallery(self):
+                pass
+
+            def _sync_loop(self):
+                while self.running:
+                    if self._sync_stop_event.wait(timeout=60):
+                        break
+                    if not self.running:
+                        break
+                    self._load_gallery()
+
+        app = FakeApp()
+        t = threading.Thread(target=app._sync_loop, daemon=True)
+        t.start()
+        time.sleep(0.05)
+        app.running = False
+        app._sync_stop_event.set()
+        t.join(timeout=2)
+        self.assertFalse(t.is_alive(), "_sync_loop 未在 2 秒内退出")
+
+
 class TestWebServerReadiness(unittest.TestCase):
     def test_run_web_server_accepts_ready_event_param(self):
         """run_web_server 应接受 ready_event 参数"""

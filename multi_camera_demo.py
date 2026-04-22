@@ -742,6 +742,7 @@ class MultiCameraApp:
 
         # 系统状态
         self.running = True
+        self._sync_stop_event = threading.Event()
 
         # 启动摄像头线程
         self._start_cameras()
@@ -766,9 +767,12 @@ class MultiCameraApp:
         print(f"MultiCameraApp: 成功加载 {len(names)} 个人脸特征")
 
     def _sync_loop(self):
-        """后台定期重新加载人脸库"""
-        while True:
-            time.sleep(SYNC_INTERVAL)
+        """后台定期重新加载人脸库，可被 _sync_stop_event 提前唤醒"""
+        while self.running:
+            if self._sync_stop_event.wait(timeout=SYNC_INTERVAL):
+                break  # 收到停止信号
+            if not self.running:
+                break
             print("MultiCameraApp: 同步人脸库...")
             self._load_gallery()
 
@@ -1445,6 +1449,8 @@ class MultiCameraApp:
                     print("MultiCameraApp: 已退出全屏模式")
 
         # 清理
+        self.running = False
+        self._sync_stop_event.set()  # 立即唤醒 _sync_loop 退出
         for thread in self.camera_threads:
             thread.stop()
         cv2.destroyAllWindows()
