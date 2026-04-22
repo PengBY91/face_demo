@@ -341,8 +341,14 @@ class CameraThread(threading.Thread):
 
     def _stop_flush_thread(self):
         """通知 flush 线程退出并等待"""
+        # Drain pending items so sentinel has room
+        while not self._flush_queue.empty():
+            try:
+                self._flush_queue.get_nowait()
+            except queue.Empty:
+                break
         try:
-            self._flush_queue.put_nowait(None)  # sentinel
+            self._flush_queue.put(None, timeout=2)  # blocking with timeout
         except queue.Full:
             pass
         if self._flush_thread_obj and self._flush_thread_obj.is_alive():
@@ -376,10 +382,10 @@ class CameraThread(threading.Thread):
         except requests.exceptions.RequestException as e:
             print(f"CameraThread [{self.camera_name}]: 上报异常: {e}")
 
-    def _prepare_flush_records(self) -> list:
-        """将 best_results 序列化为 records list（调用方必须持 best_results_lock）"""
+    def _prepare_flush_records(self, raw_items: list) -> list:
+        """将 best_results 快照序列化为 records list（无需持锁）"""
         records = []
-        for name, data in self.best_results.items():
+        for name, data in raw_items:
             try:
                 _, img_encoded = cv2.imencode('.jpg', data['image'])
                 img_base64 = base64.b64encode(img_encoded.tobytes()).decode('utf-8')
@@ -396,11 +402,16 @@ class CameraThread(threading.Thread):
 
     def run(self):
         """线程主循环"""
+        self._start_flush_thread()
+        try:
+            self._run_inner()
+        finally:
+            self._stop_flush_thread()
+
+    def _run_inner(self):
+        """线程主循环实现（由 run() 包装以保证 flush 线程清理）"""
         rtsp_url = get_camera_url(self.camera_config)
         rtsp_display_url = rtsp_url.split('@')[-1]  # 隐藏密码的显示 URL
-
-        # 启动 HTTP 上报线程
-        self._start_flush_thread()
 
         # 确保 RTSP 环境变量只设置一次（线程安全）
         _ensure_rtsp_env()
@@ -631,8 +642,7 @@ class CameraThread(threading.Thread):
         except queue.Full:
             pass
 
-        # 采样上报：在锁内只更新内存缓存，不做 IO
-        flush_records = None
+        raw_snapshot = None
         with self.best_results_lock:
             if name not in self.best_results and len(self.best_results) >= self.MAX_BEST_RESULTS:
                 pass
@@ -643,17 +653,19 @@ class CameraThread(threading.Thread):
                 }
 
             if now - self.last_flush_time >= self.flush_interval:
-                # 在锁内序列化数据，锁外投递
-                flush_records = self._prepare_flush_records()
+                # Copy raw data under lock, encode outside
+                raw_snapshot = list(self.best_results.items())
                 self.best_results = {}
                 self.last_flush_time = now
 
-        # 锁已释放，将 records 投递给 flush 线程（非阻塞）
-        if flush_records:
-            try:
-                self._flush_queue.put_nowait(flush_records)
-            except queue.Full:
-                print(f"CameraThread [{self.camera_name}]: flush 队列已满，丢弃本次上报")
+        # Encode OUTSIDE the lock (CPU-bound JPEG encoding)
+        if raw_snapshot is not None:
+            flush_records = self._prepare_flush_records(raw_snapshot)
+            if flush_records:
+                try:
+                    self._flush_queue.put_nowait(flush_records)
+                except queue.Full:
+                    print(f"CameraThread [{self.camera_name}]: flush 队列已满，丢弃本次上报")
 
     def stop(self):
         """停止线程"""
