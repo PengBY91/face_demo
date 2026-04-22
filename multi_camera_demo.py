@@ -203,6 +203,10 @@ class CameraThread(threading.Thread):
         # 使用 Session 复用 HTTP 连接
         self.session = requests.Session()
 
+        # flush 线程通信队列（放 records list，非阻塞）
+        self._flush_queue: queue.Queue = queue.Queue(maxsize=50)
+        self._flush_thread_obj: Optional[threading.Thread] = None
+
         # 跳帧识别配置
         self.skip_frames = SKIP_FRAMES
         self.frame_index = 0  # 帧计数器
@@ -328,10 +332,75 @@ class CameraThread(threading.Thread):
 
         return dst
 
+    def _start_flush_thread(self):
+        """启动专用 HTTP 上报线程"""
+        self._flush_thread_obj = threading.Thread(
+            target=self._flush_worker, daemon=True, name=f"flush-{self.camera_name}"
+        )
+        self._flush_thread_obj.start()
+
+    def _stop_flush_thread(self):
+        """通知 flush 线程退出并等待"""
+        try:
+            self._flush_queue.put_nowait(None)  # sentinel
+        except queue.Full:
+            pass
+        if self._flush_thread_obj and self._flush_thread_obj.is_alive():
+            self._flush_thread_obj.join(timeout=2)
+
+    def _flush_worker(self):
+        """flush 线程主循环：消费队列，执行 HTTP 上报"""
+        while True:
+            try:
+                records = self._flush_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            if records is None:  # sentinel — 退出信号
+                break
+            self._send_records(records)
+
+    def _send_records(self, records: list):
+        """执行实际 HTTP POST（在 flush 线程中调用，不持任何锁）"""
+        try:
+            resp = self.session.post(
+                f"{self.server_url}/api/records_batch",
+                json=records,
+                timeout=self.REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                print(f"CameraThread [{self.camera_name}]: 已上报 {len(records)} 条记录")
+            else:
+                print(f"CameraThread [{self.camera_name}]: 上报失败: {resp.text}")
+        except requests.exceptions.Timeout:
+            print(f"CameraThread [{self.camera_name}]: 上报超时")
+        except requests.exceptions.RequestException as e:
+            print(f"CameraThread [{self.camera_name}]: 上报异常: {e}")
+
+    def _prepare_flush_records(self) -> list:
+        """将 best_results 序列化为 records list（调用方必须持 best_results_lock）"""
+        records = []
+        for name, data in self.best_results.items():
+            try:
+                _, img_encoded = cv2.imencode('.jpg', data['image'])
+                img_base64 = base64.b64encode(img_encoded.tobytes()).decode('utf-8')
+                records.append({
+                    'name': name,
+                    'confidence': float(data['score']),
+                    'image_b64': img_base64,
+                    'camera_id': self.camera_id,
+                    'camera_name': self.camera_name
+                })
+            except Exception as e:
+                print(f"CameraThread [{self.camera_name}]: 准备数据异常 {name}: {e}")
+        return records
+
     def run(self):
         """线程主循环"""
         rtsp_url = get_camera_url(self.camera_config)
         rtsp_display_url = rtsp_url.split('@')[-1]  # 隐藏密码的显示 URL
+
+        # 启动 HTTP 上报线程
+        self._start_flush_thread()
 
         # 确保 RTSP 环境变量只设置一次（线程安全）
         _ensure_rtsp_env()
@@ -557,74 +626,39 @@ class CameraThread(threading.Thread):
             gallery_img=gallery_img,
             timestamp=now
         )
-
-        # 非阻塞方式放入队列
         try:
             self.detection_queue.put_nowait(record)
         except queue.Full:
-            pass  # 队列满时静默丢弃，但记录日志
-            # 可以考虑记录日志：print(f"队列已满，丢弃记录: {name}")
+            pass
 
-        # 采样上报：更新最佳结果（线程安全）
+        # 采样上报：在锁内只更新内存缓存，不做 IO
+        flush_records = None
         with self.best_results_lock:
-            # 限制最大缓存数量，防止内存无限增长
             if name not in self.best_results and len(self.best_results) >= self.MAX_BEST_RESULTS:
-                pass  # 跳过新的未知人员
+                pass
             elif name not in self.best_results or score > self.best_results[name]['score']:
                 self.best_results[name] = {
                     "score": score,
                     "image": aligned_face.copy()
                 }
 
-            # 定期批量上报
             if now - self.last_flush_time >= self.flush_interval:
-                self._flush_to_server()
+                # 在锁内序列化数据，锁外投递
+                flush_records = self._prepare_flush_records()
+                self.best_results = {}
                 self.last_flush_time = now
 
-    def _flush_to_server(self):
-        """批量上报识别结果到服务器"""
-        if not self.best_results:
-            return
-
-        records = []
-
-        for name, data in self.best_results.items():
+        # 锁已释放，将 records 投递给 flush 线程（非阻塞）
+        if flush_records:
             try:
-                _, img_encoded = cv2.imencode('.jpg', data['image'])
-                img_base64 = base64.b64encode(img_encoded.tobytes()).decode('utf-8')
-
-                records.append({
-                    'name': name,
-                    'confidence': float(data['score']),
-                    'image_b64': img_base64,
-                    'camera_id': self.camera_id,
-                    'camera_name': self.camera_name
-                })
-            except Exception as e:
-                print(f"CameraThread [{self.camera_name}]: 准备数据异常 {name}: {e}")
-
-        if records:
-            try:
-                resp = self.session.post(
-                    f"{self.server_url}/api/records_batch",
-                    json=records,
-                    timeout=self.REQUEST_TIMEOUT
-                )
-                if resp.status_code == 200:
-                    print(f"CameraThread [{self.camera_name}]: 已上报 {len(records)} 条记录")
-                else:
-                    print(f"CameraThread [{self.camera_name}]: 上报失败: {resp.text}")
-            except requests.exceptions.Timeout:
-                print(f"CameraThread [{self.camera_name}]: 上报超时")
-            except requests.exceptions.RequestException as e:
-                print(f"CameraThread [{self.camera_name}]: 上报异常: {e}")
-
-        # 清空最佳结果缓存
-        self.best_results = {}
+                self._flush_queue.put_nowait(flush_records)
+            except queue.Full:
+                print(f"CameraThread [{self.camera_name}]: flush 队列已满，丢弃本次上报")
 
     def stop(self):
         """停止线程"""
         self.running = False
+        self._stop_flush_thread()
 
 
 class MultiCameraApp:
