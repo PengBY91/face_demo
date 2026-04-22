@@ -144,6 +144,67 @@ class DetectionRecord:
         self.timestamp = timestamp
 
 
+class InferenceWorker(threading.Thread):
+    """
+    批量推理工作线程。
+    收集所有摄像头的帧，组 batch 后一次 GPU 调用，结果分发回各摄像头的 result_queue。
+    """
+    BATCH_WINDOW_MS = 40   # 时间窗（ms），超时强制触发推理
+    MAX_BATCH_SIZE  = 8    # 单次 batch 上限
+
+    def __init__(self, face_engine, infer_queue: queue.Queue,
+                 result_queues: Dict[str, queue.Queue]):
+        super().__init__(daemon=True)
+        self.face_engine   = face_engine
+        self.infer_queue   = infer_queue
+        self.result_queues = result_queues
+        self._running      = True
+
+    def run(self):
+        while self._running:
+            batch: Dict[str, tuple] = {}  # {cam_id: (frame_id, frame)}，每路最多1帧
+            deadline = time.time() + self.BATCH_WINDOW_MS / 1000.0
+
+            # 收集帧：时间窗结束或达到上限时停止
+            while time.time() < deadline and len(batch) < self.MAX_BATCH_SIZE:
+                remaining = max(0.001, deadline - time.time())
+                try:
+                    cam_id, frame_id, frame = self.infer_queue.get(timeout=remaining)
+                    batch[cam_id] = (frame_id, frame)  # 同 cam_id 新帧覆盖旧帧
+                except queue.Empty:
+                    break
+
+            if not batch:
+                continue
+
+            cam_ids  = list(batch.keys())
+            frames   = [batch[cid][1] for cid in cam_ids]
+            frame_ids = [batch[cid][0] for cid in cam_ids]
+
+            try:
+                all_results = self.face_engine.batch_detect_and_extract(frames)
+            except Exception as e:
+                print(f"InferenceWorker: 推理异常: {e}")
+                continue
+
+            # 分发结果到各摄像头的 result_queue（清旧保新）
+            for cam_id, frame_id, faces in zip(cam_ids, frame_ids, all_results):
+                rq = self.result_queues.get(cam_id)
+                if rq is None:
+                    continue
+                try:
+                    rq.get_nowait()   # 丢弃旧结果
+                except queue.Empty:
+                    pass
+                try:
+                    rq.put_nowait((frame_id, faces))
+                except queue.Full:
+                    pass
+
+    def stop(self):
+        self._running = False
+
+
 class CameraThread(threading.Thread):
     """
     单路摄像头处理线程
