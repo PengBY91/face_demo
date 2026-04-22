@@ -88,5 +88,40 @@ class TestFlushThread(unittest.TestCase):
         self.assertFalse(t._flush_thread_obj.is_alive())
 
 
+class TestFrameLock(unittest.TestCase):
+    def test_get_latest_frame_returns_consistent_pair(self):
+        """get_latest_frame() 应返回 (frame, detections) 的一致快照"""
+        t = _make_thread()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        frame[0, 0] = [1, 2, 3]  # mark to verify copy fidelity
+        detections = [{'bbox': [10, 10, 50, 50], 'name': 'Alice',
+                       'score': 0.9, 'is_suspicious': False, 'aligned_face': None}]
+        t.update_latest_frame(frame, detections)
+
+        f, d = t.get_latest_frame()
+        self.assertIsNotNone(f)
+        self.assertEqual(f.shape, (480, 640, 3))
+        np.testing.assert_array_equal(f[0, 0], [1, 2, 3])
+        self.assertEqual(len(d), 1)
+        self.assertEqual(d[0]['name'], 'Alice')
+
+    def test_get_latest_frame_returns_none_before_update(self):
+        """未更新时 get_latest_frame() 应返回 (None, [])"""
+        t = _make_thread()
+        f, d = t.get_latest_frame()
+        self.assertIsNone(f)
+        self.assertEqual(d, [])
+
+    def test_update_frame_is_independent_copy(self):
+        """update_latest_frame 存储副本，外部修改不影响内部状态"""
+        t = _make_thread()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        t.update_latest_frame(frame, [])
+        frame[0, 0] = [99, 99, 99]  # mutate original after update
+        f, _ = t.get_latest_frame()
+        self.assertFalse(np.array_equal(f[0, 0], [99, 99, 99]),
+                         "Internal frame should not be affected by external mutation")
+
+
 if __name__ == '__main__':
     unittest.main()

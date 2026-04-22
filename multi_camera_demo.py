@@ -186,6 +186,7 @@ class CameraThread(threading.Thread):
 
         self.latest_frame = None
         self.latest_detections = []
+        self._frame_lock = threading.Lock()
         self.frame_count = 0
         self.last_fps_time = time.time()
 
@@ -400,6 +401,19 @@ class CameraThread(threading.Thread):
                 print(f"CameraThread [{self.camera_name}]: 准备数据异常 {name}: {e}")
         return records
 
+    def update_latest_frame(self, frame: np.ndarray, detections: list):
+        """线程安全地更新最新帧和检测结果（原子配对）"""
+        with self._frame_lock:
+            self.latest_frame = frame.copy()
+            self.latest_detections = detections
+
+    def get_latest_frame(self) -> Tuple[Optional[np.ndarray], list]:
+        """线程安全地获取最新帧和检测结果的一致快照"""
+        with self._frame_lock:
+            if self.latest_frame is None:
+                return None, []
+            return self.latest_frame.copy(), list(self.latest_detections)
+
     def run(self):
         """线程主循环"""
         self._start_flush_thread()
@@ -572,18 +586,16 @@ class CameraThread(threading.Thread):
                             if name != "Unknown" and not is_suspicious:
                                 self._process_detection(name, score, aligned_face)
 
-                        # 更新缓存
+                        # 更新缓存并原子地更新帧+检测结果
                         self.cached_detections = detections
-                        self.latest_detections = detections
+                        self.update_latest_frame(frame, detections)
 
                     except Exception as e:
                         print(f"CameraThread [{self.camera_name}]: 处理异常: {e}")
                 else:
                     # 使用缓存的识别结果（插值显示）
-                    self.latest_detections = self.cached_detections
+                    self.update_latest_frame(frame, self.cached_detections)
 
-                # 始终更新最新帧（用于显示）
-                self.latest_frame = frame.copy()
                 self.last_frame_time = time.time()
 
         print(f"CameraThread [{self.camera_name}]: 已停止")
@@ -913,11 +925,11 @@ class MultiCameraApp:
             cv2.rectangle(canvas, (thumb_x, thumb_y), (thumb_x + thumb_w, thumb_y + card_height), border_color, border_width)
 
             # 渲染缩略图内容
-            if thread.latest_frame is not None:
+            thumb_frame_raw, _ = thread.get_latest_frame()
+            if thumb_frame_raw is not None:
                 try:
-                    frame = thread.latest_frame.copy()
                     # 直接缩放到缩略图尺寸（16:9）
-                    thumb_frame = cv2.resize(frame, (thumb_w, thumb_h))
+                    thumb_frame = cv2.resize(thumb_frame_raw, (thumb_w, thumb_h))
                     canvas[thumb_y:thumb_y + thumb_h, thumb_x:thumb_x + thumb_w] = thumb_frame
                 except Exception as e:
                     # 渲染错误时显示提示
@@ -1020,11 +1032,11 @@ class MultiCameraApp:
 
         thread = self.camera_threads[self.selected_camera_index]
 
-        if thread.latest_frame is not None:
-            frame = thread.latest_frame.copy()
+        frame, detections_snapshot = thread.get_latest_frame()
+        if frame is not None:
 
             # 绘制检测框
-            for det in thread.latest_detections:
+            for det in detections_snapshot:
                 bbox = det['bbox']
                 x1, y1, x2, y2 = bbox
                 name = det['name']
