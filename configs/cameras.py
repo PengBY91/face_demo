@@ -162,16 +162,10 @@ DETECTION_QUEUE_SIZE = 100
 # Maximum display records
 MAX_DISPLAY_RECORDS = 20
 
-# FaceEngine 初始化等待超时（秒）
-# FaceEngine initialization wait timeout in seconds
+# 以下常量已废弃，由 Semaphore 机制替代，保留仅供向后兼容
+# Deprecated: replaced by Semaphore-based serialization in multi_camera_demo.py
 ENGINE_INIT_TIMEOUT = 15
-
-# 引擎初始化检查间隔（秒）
-# Engine initialization check interval in seconds
 ENGINE_INIT_CHECK_INTERVAL = 0.5
-
-# 摄像头启动间隔（秒）
-# Delay between camera starts in seconds
 CAMERA_START_DELAY = 2
 
 

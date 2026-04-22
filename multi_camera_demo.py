@@ -30,12 +30,12 @@ from config import (
     ARCFACE_MODEL_PATH, PROVIDERS,
     GALLERY_DIR, DET_THRESH,
     SIMILARITY_THRESHOLD, SUSPICIOUS_THRESHOLD, SYNC_INTERVAL,
-    SERVER_HOST, SERVER_PORT, SAMPLER_FLUSH_INTERVAL,
+    SERVER_HOST, SERVER_PORT,
     RTSP_BUFFER_SIZE
 )
 from configs.cameras import (
     # 摄像头配置
-    CAMERAS, get_camera_url, get_enabled_cameras,
+    get_camera_url, get_enabled_cameras,
     # RTSP 连接配置
     RTSP_MAX_RETRIES, RTSP_RETRY_DELAY, RTSP_RECONNECT_RETRIES,
     RTSP_CONNECT_WAIT, RTSP_VERIFY_READS, RTSP_VERIFY_INTERVAL,
