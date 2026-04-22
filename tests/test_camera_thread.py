@@ -138,5 +138,18 @@ class TestFaceEngineInitSerialization(unittest.TestCase):
         self.assertIsInstance(t.engine_init_semaphore, type(threading.Semaphore(1)))
 
 
+class TestWebServerReadiness(unittest.TestCase):
+    def test_run_web_server_accepts_ready_event_param(self):
+        """run_web_server 应接受 ready_event 参数"""
+        import inspect
+        from multi_camera_demo import run_web_server
+        sig = inspect.signature(run_web_server)
+        self.assertIn('ready_event', sig.parameters,
+                      "run_web_server 缺少 ready_event 参数")
+        param = sig.parameters['ready_event']
+        self.assertIsNone(param.default,
+                          "ready_event 应有默认值 None")
+
+
 if __name__ == '__main__':
     unittest.main()

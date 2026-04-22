@@ -1524,31 +1524,49 @@ class MultiCameraApp:
                     self.thumbnail_scroll_offset = min(max_offset, self.thumbnail_scroll_offset + 1)
 
 
-def run_web_server(port=8008):
+def run_web_server(port: int = 8008, ready_event: Optional[threading.Event] = None):
     """
     在后台线程中运行 Web 服务器
     复用 server.py 的 FastAPI 应用
 
     Args:
         port: Web 服务器端口
+        ready_event: 服务器就绪后置位（可选）
     """
     import uvicorn
-    # 导入 server 模块的 app 对象，复用所有路由和初始化逻辑
     from server import app as web_app
 
     print(f"Web服务端: 启动在 http://{SERVER_HOST}:{port}")
-    uvicorn.run(web_app, host=SERVER_HOST, port=port)
+
+    config = uvicorn.Config(web_app, host=SERVER_HOST, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    # Patch startup to signal ready_event when uvicorn is accepting connections
+    original_startup = server.startup
+
+    async def patched_startup(sockets=None):
+        await original_startup(sockets)
+        if ready_event:
+            ready_event.set()
+            print("Web服务端: 就绪")
+
+    server.startup = patched_startup
+    server.run()
 
 
 if __name__ == "__main__":
-    # 启动 Web 服务器（在后台线程中）
+    # 启动 Web 服务器（在后台线程中），等待就绪信号
     web_port = 8008
-    web_thread = threading.Thread(target=run_web_server, args=(web_port,), daemon=True)
+    web_ready = threading.Event()
+    web_thread = threading.Thread(
+        target=run_web_server, args=(web_port, web_ready), daemon=True
+    )
     web_thread.start()
-    print(f"Web服务端已在后台启动，访问地址: http://127.0.0.1:{web_port}")
 
-    # 等待 Web 服务器初始化
-    time.sleep(2)
+    if not web_ready.wait(timeout=15):
+        print("警告: Web 服务器在 15 秒内未就绪，继续启动...")
+    else:
+        print(f"Web服务端已就绪，访问地址: http://127.0.0.1:{web_port}")
 
     # 启动多路摄像头应用
     app = MultiCameraApp()
