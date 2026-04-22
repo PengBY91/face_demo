@@ -756,6 +756,27 @@ class MultiCameraApp:
         self.running = True
         self._sync_stop_event = threading.Event()
 
+        # 共享 FaceEngine（单个 GPU Session，所有摄像头共用）
+        print("MultiCameraApp: 初始化共享 FaceEngine...")
+        self.shared_engine = FaceEngine(
+            rec_model_path=ARCFACE_MODEL_PATH,
+            providers=PROVIDERS,
+            det_thresh=DET_THRESH
+        )
+        print("MultiCameraApp: 共享 FaceEngine 初始化完成")
+
+        # 推理队列和每路摄像头的结果队列
+        cameras = get_enabled_cameras()
+        self.infer_queue = queue.Queue(maxsize=len(cameras) * 4)
+        self.result_queues = {cam['id']: queue.Queue(maxsize=2) for cam in cameras}
+
+        # 启动 InferenceWorker
+        self.infer_worker = InferenceWorker(
+            self.shared_engine, self.infer_queue, self.result_queues
+        )
+        self.infer_worker.start()
+        print("MultiCameraApp: InferenceWorker 已启动")
+
         # 启动摄像头线程
         self._start_cameras()
 
@@ -789,11 +810,9 @@ class MultiCameraApp:
             self._load_gallery()
 
     def _start_cameras(self):
-        """启动所有启用的摄像头线程（共享初始化 Semaphore，串行 GPU 初始化）"""
+        """启动所有启用的摄像头线程"""
         cameras = get_enabled_cameras()
         print(f"MultiCameraApp: 启动 {len(cameras)} 路摄像头...")
-
-        engine_init_semaphore = threading.Semaphore(1)
 
         for cam_config in cameras:
             thread = CameraThread(
@@ -802,7 +821,8 @@ class MultiCameraApp:
                 detection_queue=self.detection_queue,
                 feature_db=self.feature_db,
                 feature_lock=self.feature_lock,
-                engine_init_semaphore=engine_init_semaphore
+                infer_queue=self.infer_queue,
+                result_queue=self.result_queues[cam_config['id']]
             )
             thread.start()
             self.camera_threads.append(thread)
@@ -1465,6 +1485,7 @@ class MultiCameraApp:
         self._sync_stop_event.set()  # 立即唤醒 _sync_loop 退出
         for thread in self.camera_threads:
             thread.stop()
+        self.infer_worker.stop()
         cv2.destroyAllWindows()
         print("MultiCameraApp: 已退出")
 
