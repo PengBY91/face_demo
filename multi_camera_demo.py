@@ -405,7 +405,7 @@ class CameraThread(threading.Thread):
         """线程安全地更新最新帧和检测结果（原子配对）"""
         with self._frame_lock:
             self.latest_frame = frame.copy()
-            self.latest_detections = detections
+            self.latest_detections = list(detections)
 
     def get_latest_frame(self) -> Tuple[Optional[np.ndarray], list]:
         """线程安全地获取最新帧和检测结果的一致快照"""
@@ -798,7 +798,7 @@ class MultiCameraApp:
         should_switch = False
 
         # 条件1：当前摄像头无响应超过超时时间（有帧但超时，或无帧且线程在重试）
-        if current_thread.latest_frame is not None:
+        if current_thread.latest_frame is not None:  # lock-free probe: None-check only, no pixel data read
             frame_age = now - current_thread.last_frame_time
             if frame_age > self.auto_poll_timeout:
                 should_switch = True
@@ -822,7 +822,7 @@ class MultiCameraApp:
             next_thread = self.camera_threads[next_idx]
 
             # 检查该摄像头是否有新鲜画面（帧年龄 < 超时时间）
-            if (next_thread.latest_frame is not None and
+            if (next_thread.latest_frame is not None and  # lock-free probe: None-check only, no pixel data read
                 now - next_thread.last_frame_time <= self.auto_poll_timeout):
                 if next_idx != self.selected_camera_index:
                     self.selected_camera_index = next_idx
