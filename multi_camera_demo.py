@@ -30,12 +30,12 @@ from config import (
     ARCFACE_MODEL_PATH, PROVIDERS,
     GALLERY_DIR, DET_THRESH,
     SIMILARITY_THRESHOLD, SUSPICIOUS_THRESHOLD, SYNC_INTERVAL,
-    SERVER_HOST, SERVER_PORT, SAMPLER_FLUSH_INTERVAL,
+    SERVER_HOST, SERVER_PORT,
     RTSP_BUFFER_SIZE
 )
 from configs.cameras import (
     # 摄像头配置
-    CAMERAS, get_camera_url, get_enabled_cameras,
+    get_camera_url, get_enabled_cameras,
     # RTSP 连接配置
     RTSP_MAX_RETRIES, RTSP_RETRY_DELAY, RTSP_RECONNECT_RETRIES,
     RTSP_CONNECT_WAIT, RTSP_VERIFY_READS, RTSP_VERIFY_INTERVAL,
@@ -156,7 +156,8 @@ class CameraThread(threading.Thread):
 
     def __init__(self, camera_config: dict, gallery: GalleryManager,
                  detection_queue: queue.Queue, feature_db: dict,
-                 feature_lock: threading.Lock):
+                 feature_lock: threading.Lock,
+                 engine_init_semaphore: Optional[threading.Semaphore] = None):
         """
         初始化摄像头线程
 
@@ -166,6 +167,7 @@ class CameraThread(threading.Thread):
             detection_queue: 识别记录队列（共享）
             feature_db: 特征数据库字典 {'vectors': np.ndarray, 'names': List[str]}（共享）
             feature_lock: 特征数据读写锁
+            engine_init_semaphore: 串行化 FaceEngine GPU 初始化的信号量（共享）
         """
         super().__init__(daemon=True)
 
@@ -186,6 +188,7 @@ class CameraThread(threading.Thread):
 
         self.latest_frame = None
         self.latest_detections = []
+        self._frame_lock = threading.Lock()
         self.frame_count = 0
         self.last_fps_time = time.time()
 
@@ -203,6 +206,10 @@ class CameraThread(threading.Thread):
         # 使用 Session 复用 HTTP 连接
         self.session = requests.Session()
 
+        # flush 线程通信队列（放 records list，非阻塞）
+        self._flush_queue: queue.Queue = queue.Queue(maxsize=50)
+        self._flush_thread_obj: Optional[threading.Thread] = None
+
         # 跳帧识别配置
         self.skip_frames = SKIP_FRAMES
         self.frame_index = 0  # 帧计数器
@@ -213,6 +220,8 @@ class CameraThread(threading.Thread):
         self.undistort_mapx = None
         self.undistort_mapy = None
         self.undistort_roi = None
+
+        self.engine_init_semaphore = engine_init_semaphore or threading.Semaphore(1)
 
     @property
     def running(self):
@@ -328,29 +337,121 @@ class CameraThread(threading.Thread):
 
         return dst
 
+    def _start_flush_thread(self):
+        """启动专用 HTTP 上报线程"""
+        self._flush_thread_obj = threading.Thread(
+            target=self._flush_worker, daemon=True, name=f"flush-{self.camera_name}"
+        )
+        self._flush_thread_obj.start()
+
+    def _stop_flush_thread(self):
+        """通知 flush 线程退出并等待"""
+        # Drain pending items so sentinel has room
+        while not self._flush_queue.empty():
+            try:
+                self._flush_queue.get_nowait()
+            except queue.Empty:
+                break
+        try:
+            self._flush_queue.put(None, timeout=2)  # blocking with timeout
+        except queue.Full:
+            pass
+        if self._flush_thread_obj and self._flush_thread_obj.is_alive():
+            self._flush_thread_obj.join(timeout=2)
+
+    def _flush_worker(self):
+        """flush 线程主循环：消费队列，执行 HTTP 上报"""
+        while True:
+            try:
+                records = self._flush_queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            if records is None:  # sentinel — 退出信号
+                break
+            self._send_records(records)
+
+    def _send_records(self, records: list):
+        """执行实际 HTTP POST（在 flush 线程中调用，不持任何锁）"""
+        try:
+            resp = self.session.post(
+                f"{self.server_url}/api/records_batch",
+                json=records,
+                timeout=self.REQUEST_TIMEOUT
+            )
+            if resp.status_code == 200:
+                print(f"CameraThread [{self.camera_name}]: 已上报 {len(records)} 条记录")
+            else:
+                print(f"CameraThread [{self.camera_name}]: 上报失败: {resp.text}")
+        except requests.exceptions.Timeout:
+            print(f"CameraThread [{self.camera_name}]: 上报超时")
+        except requests.exceptions.RequestException as e:
+            print(f"CameraThread [{self.camera_name}]: 上报异常: {e}")
+
+    def _prepare_flush_records(self, raw_items: list) -> list:
+        """将 best_results 快照序列化为 records list（无需持锁）"""
+        records = []
+        for name, data in raw_items:
+            try:
+                _, img_encoded = cv2.imencode('.jpg', data['image'])
+                img_base64 = base64.b64encode(img_encoded.tobytes()).decode('utf-8')
+                records.append({
+                    'name': name,
+                    'confidence': float(data['score']),
+                    'image_b64': img_base64,
+                    'camera_id': self.camera_id,
+                    'camera_name': self.camera_name
+                })
+            except Exception as e:
+                print(f"CameraThread [{self.camera_name}]: 准备数据异常 {name}: {e}")
+        return records
+
+    def update_latest_frame(self, frame: np.ndarray, detections: list):
+        """线程安全地更新最新帧和检测结果（原子配对）"""
+        with self._frame_lock:
+            self.latest_frame = frame.copy()
+            self.latest_detections = list(detections)
+
+    def get_latest_frame(self) -> Tuple[Optional[np.ndarray], list]:
+        """线程安全地获取最新帧和检测结果的一致快照"""
+        with self._frame_lock:
+            if self.latest_frame is None:
+                return None, []
+            return self.latest_frame.copy(), list(self.latest_detections)
+
     def run(self):
         """线程主循环"""
+        self._start_flush_thread()
+        try:
+            self._run_inner()
+        finally:
+            self._stop_flush_thread()
+
+    def _run_inner(self):
+        """线程主循环实现（由 run() 包装以保证 flush 线程清理）"""
         rtsp_url = get_camera_url(self.camera_config)
         rtsp_display_url = rtsp_url.split('@')[-1]  # 隐藏密码的显示 URL
 
         # 确保 RTSP 环境变量只设置一次（线程安全）
         _ensure_rtsp_env()
 
-        # 延迟初始化 FaceEngine（避免多线程同时初始化 GPU 资源冲突）
+        # 延迟初始化 FaceEngine（通过信号量串行化 GPU 资源初始化）
         if not self.engine_initialized:
-            print(f"CameraThread [{self.camera_name}]: 初始化 FaceEngine...")
-            try:
-                self.engine = FaceEngine(
-                    rec_model_path=ARCFACE_MODEL_PATH,
-                    providers=PROVIDERS,
-                    det_thresh=DET_THRESH
-                )
-                self.engine_initialized = True
-                print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化完成")
-            except Exception as e:
-                print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化失败: {e}")
-                self.running = False
-                return
+            print(f"CameraThread [{self.camera_name}]: 等待 FaceEngine 初始化资源...")
+            with self.engine_init_semaphore:
+                if not self.engine_initialized:  # double-check after acquiring semaphore
+                    print(f"CameraThread [{self.camera_name}]: 初始化 FaceEngine...")
+                    try:
+                        self.engine = FaceEngine(
+                            rec_model_path=ARCFACE_MODEL_PATH,
+                            providers=PROVIDERS,
+                            det_thresh=DET_THRESH
+                        )
+                        self.engine_initialized = True
+                        print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化完成")
+                    except Exception as e:
+                        print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化失败: {e}")
+                        self.running = False
+                        return
 
         # 持久重连外层循环：线程不会因 RTSP 连接失败而永久终止
         while self.running:
@@ -492,18 +593,16 @@ class CameraThread(threading.Thread):
                             if name != "Unknown" and not is_suspicious:
                                 self._process_detection(name, score, aligned_face)
 
-                        # 更新缓存
+                        # 更新缓存并原子地更新帧+检测结果
                         self.cached_detections = detections
-                        self.latest_detections = detections
+                        self.update_latest_frame(frame, detections)
 
                     except Exception as e:
                         print(f"CameraThread [{self.camera_name}]: 处理异常: {e}")
                 else:
                     # 使用缓存的识别结果（插值显示）
-                    self.latest_detections = self.cached_detections
+                    self.update_latest_frame(frame, self.cached_detections)
 
-                # 始终更新最新帧（用于显示）
-                self.latest_frame = frame.copy()
                 self.last_frame_time = time.time()
 
         print(f"CameraThread [{self.camera_name}]: 已停止")
@@ -557,74 +656,40 @@ class CameraThread(threading.Thread):
             gallery_img=gallery_img,
             timestamp=now
         )
-
-        # 非阻塞方式放入队列
         try:
             self.detection_queue.put_nowait(record)
         except queue.Full:
-            pass  # 队列满时静默丢弃，但记录日志
-            # 可以考虑记录日志：print(f"队列已满，丢弃记录: {name}")
+            pass
 
-        # 采样上报：更新最佳结果（线程安全）
+        raw_snapshot = None
         with self.best_results_lock:
-            # 限制最大缓存数量，防止内存无限增长
             if name not in self.best_results and len(self.best_results) >= self.MAX_BEST_RESULTS:
-                pass  # 跳过新的未知人员
+                pass
             elif name not in self.best_results or score > self.best_results[name]['score']:
                 self.best_results[name] = {
                     "score": score,
                     "image": aligned_face.copy()
                 }
 
-            # 定期批量上报
             if now - self.last_flush_time >= self.flush_interval:
-                self._flush_to_server()
+                # Copy raw data under lock, encode outside
+                raw_snapshot = list(self.best_results.items())
+                self.best_results = {}
                 self.last_flush_time = now
 
-    def _flush_to_server(self):
-        """批量上报识别结果到服务器"""
-        if not self.best_results:
-            return
-
-        records = []
-
-        for name, data in self.best_results.items():
-            try:
-                _, img_encoded = cv2.imencode('.jpg', data['image'])
-                img_base64 = base64.b64encode(img_encoded.tobytes()).decode('utf-8')
-
-                records.append({
-                    'name': name,
-                    'confidence': float(data['score']),
-                    'image_b64': img_base64,
-                    'camera_id': self.camera_id,
-                    'camera_name': self.camera_name
-                })
-            except Exception as e:
-                print(f"CameraThread [{self.camera_name}]: 准备数据异常 {name}: {e}")
-
-        if records:
-            try:
-                resp = self.session.post(
-                    f"{self.server_url}/api/records_batch",
-                    json=records,
-                    timeout=self.REQUEST_TIMEOUT
-                )
-                if resp.status_code == 200:
-                    print(f"CameraThread [{self.camera_name}]: 已上报 {len(records)} 条记录")
-                else:
-                    print(f"CameraThread [{self.camera_name}]: 上报失败: {resp.text}")
-            except requests.exceptions.Timeout:
-                print(f"CameraThread [{self.camera_name}]: 上报超时")
-            except requests.exceptions.RequestException as e:
-                print(f"CameraThread [{self.camera_name}]: 上报异常: {e}")
-
-        # 清空最佳结果缓存
-        self.best_results = {}
+        # Encode OUTSIDE the lock (CPU-bound JPEG encoding)
+        if raw_snapshot is not None:
+            flush_records = self._prepare_flush_records(raw_snapshot)
+            if flush_records:
+                try:
+                    self._flush_queue.put_nowait(flush_records)
+                except queue.Full:
+                    print(f"CameraThread [{self.camera_name}]: flush 队列已满，丢弃本次上报")
 
     def stop(self):
         """停止线程"""
         self.running = False
+        self._stop_flush_thread()
 
 
 class MultiCameraApp:
@@ -677,6 +742,7 @@ class MultiCameraApp:
 
         # 系统状态
         self.running = True
+        self._sync_stop_event = threading.Event()
 
         # 启动摄像头线程
         self._start_cameras()
@@ -701,31 +767,33 @@ class MultiCameraApp:
         print(f"MultiCameraApp: 成功加载 {len(names)} 个人脸特征")
 
     def _sync_loop(self):
-        """后台定期重新加载人脸库"""
-        while True:
-            time.sleep(SYNC_INTERVAL)
+        """后台定期重新加载人脸库，可被 _sync_stop_event 提前唤醒"""
+        while self.running:
+            if self._sync_stop_event.wait(timeout=SYNC_INTERVAL):
+                break  # 收到停止信号
+            if not self.running:
+                break
             print("MultiCameraApp: 同步人脸库...")
             self._load_gallery()
 
     def _start_cameras(self):
-        """启动所有启用的摄像头线程（并行启动，错开初始化）"""
+        """启动所有启用的摄像头线程（共享初始化 Semaphore，串行 GPU 初始化）"""
         cameras = get_enabled_cameras()
         print(f"MultiCameraApp: 启动 {len(cameras)} 路摄像头...")
 
-        for i, cam_config in enumerate(cameras):
+        engine_init_semaphore = threading.Semaphore(1)
+
+        for cam_config in cameras:
             thread = CameraThread(
                 camera_config=cam_config,
                 gallery=self.gallery,
                 detection_queue=self.detection_queue,
                 feature_db=self.feature_db,
-                feature_lock=self.feature_lock
+                feature_lock=self.feature_lock,
+                engine_init_semaphore=engine_init_semaphore
             )
             thread.start()
             self.camera_threads.append(thread)
-
-            # 错开启动，避免同时初始化 GPU 资源
-            if i < len(cameras) - 1:
-                time.sleep(0.5)
 
     def _auto_poll_camera(self):
         """自动轮询摄像头：当前摄像头超时或轮询间隔到达时切换到下一个有画面的摄像头"""
@@ -740,7 +808,7 @@ class MultiCameraApp:
         should_switch = False
 
         # 条件1：当前摄像头无响应超过超时时间（有帧但超时，或无帧且线程在重试）
-        if current_thread.latest_frame is not None:
+        if current_thread.latest_frame is not None:  # lock-free probe: None-check only, no pixel data read
             frame_age = now - current_thread.last_frame_time
             if frame_age > self.auto_poll_timeout:
                 should_switch = True
@@ -764,7 +832,7 @@ class MultiCameraApp:
             next_thread = self.camera_threads[next_idx]
 
             # 检查该摄像头是否有新鲜画面（帧年龄 < 超时时间）
-            if (next_thread.latest_frame is not None and
+            if (next_thread.latest_frame is not None and  # lock-free probe: None-check only, no pixel data read
                 now - next_thread.last_frame_time <= self.auto_poll_timeout):
                 if next_idx != self.selected_camera_index:
                     self.selected_camera_index = next_idx
@@ -867,11 +935,11 @@ class MultiCameraApp:
             cv2.rectangle(canvas, (thumb_x, thumb_y), (thumb_x + thumb_w, thumb_y + card_height), border_color, border_width)
 
             # 渲染缩略图内容
-            if thread.latest_frame is not None:
+            thumb_frame_raw, _ = thread.get_latest_frame()
+            if thumb_frame_raw is not None:
                 try:
-                    frame = thread.latest_frame.copy()
                     # 直接缩放到缩略图尺寸（16:9）
-                    thumb_frame = cv2.resize(frame, (thumb_w, thumb_h))
+                    thumb_frame = cv2.resize(thumb_frame_raw, (thumb_w, thumb_h))
                     canvas[thumb_y:thumb_y + thumb_h, thumb_x:thumb_x + thumb_w] = thumb_frame
                 except Exception as e:
                     # 渲染错误时显示提示
@@ -974,11 +1042,11 @@ class MultiCameraApp:
 
         thread = self.camera_threads[self.selected_camera_index]
 
-        if thread.latest_frame is not None:
-            frame = thread.latest_frame.copy()
+        frame, detections_snapshot = thread.get_latest_frame()
+        if frame is not None:
 
             # 绘制检测框
-            for det in thread.latest_detections:
+            for det in detections_snapshot:
                 bbox = det['bbox']
                 x1, y1, x2, y2 = bbox
                 name = det['name']
@@ -1381,6 +1449,8 @@ class MultiCameraApp:
                     print("MultiCameraApp: 已退出全屏模式")
 
         # 清理
+        self.running = False
+        self._sync_stop_event.set()  # 立即唤醒 _sync_loop 退出
         for thread in self.camera_threads:
             thread.stop()
         cv2.destroyAllWindows()
@@ -1460,31 +1530,49 @@ class MultiCameraApp:
                     self.thumbnail_scroll_offset = min(max_offset, self.thumbnail_scroll_offset + 1)
 
 
-def run_web_server(port=8008):
+def run_web_server(port: int = 8008, ready_event: Optional[threading.Event] = None):
     """
     在后台线程中运行 Web 服务器
     复用 server.py 的 FastAPI 应用
 
     Args:
         port: Web 服务器端口
+        ready_event: 服务器就绪后置位（可选）
     """
     import uvicorn
-    # 导入 server 模块的 app 对象，复用所有路由和初始化逻辑
     from server import app as web_app
 
     print(f"Web服务端: 启动在 http://{SERVER_HOST}:{port}")
-    uvicorn.run(web_app, host=SERVER_HOST, port=port)
+
+    config = uvicorn.Config(web_app, host=SERVER_HOST, port=port, log_level="warning")
+    server = uvicorn.Server(config)
+
+    # Patch startup to signal ready_event when uvicorn is accepting connections
+    original_startup = server.startup
+
+    async def patched_startup(sockets=None):
+        await original_startup(sockets)
+        if ready_event:
+            ready_event.set()
+            print("Web服务端: 就绪")
+
+    server.startup = patched_startup
+    server.run()
 
 
 if __name__ == "__main__":
-    # 启动 Web 服务器（在后台线程中）
+    # 启动 Web 服务器（在后台线程中），等待就绪信号
     web_port = 8008
-    web_thread = threading.Thread(target=run_web_server, args=(web_port,), daemon=True)
+    web_ready = threading.Event()
+    web_thread = threading.Thread(
+        target=run_web_server, args=(web_port, web_ready), daemon=True
+    )
     web_thread.start()
-    print(f"Web服务端已在后台启动，访问地址: http://127.0.0.1:{web_port}")
 
-    # 等待 Web 服务器初始化
-    time.sleep(2)
+    if not web_ready.wait(timeout=15):
+        print("警告: Web 服务器在 15 秒内未就绪，继续启动...")
+    else:
+        print(f"Web服务端已就绪，访问地址: http://127.0.0.1:{web_port}")
 
     # 启动多路摄像头应用
     app = MultiCameraApp()
