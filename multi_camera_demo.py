@@ -41,7 +41,7 @@ from configs.cameras import (
     RTSP_CONNECT_WAIT, RTSP_VERIFY_READS, RTSP_VERIFY_INTERVAL,
     RTSP_EXPECTED_FPS,
     # 采样和上报配置
-    MAX_BEST_RESULTS, REQUEST_TIMEOUT, FLUSH_INTERVAL, SKIP_FRAMES,
+    MAX_BEST_RESULTS, REQUEST_TIMEOUT, FLUSH_INTERVAL,
     # 队列和显示配置
     DETECTION_QUEUE_SIZE, MAX_DISPLAY_RECORDS,
     # UI 布局配置
@@ -218,7 +218,7 @@ class CameraThread(threading.Thread):
     def __init__(self, camera_config: dict, gallery: GalleryManager,
                  detection_queue: queue.Queue, feature_db: dict,
                  feature_lock: threading.Lock,
-                 engine_init_semaphore: Optional[threading.Semaphore] = None):
+                 infer_queue: queue.Queue, result_queue: queue.Queue):
         """
         初始化摄像头线程
 
@@ -228,7 +228,8 @@ class CameraThread(threading.Thread):
             detection_queue: 识别记录队列（共享）
             feature_db: 特征数据库字典 {'vectors': np.ndarray, 'names': List[str]}（共享）
             feature_lock: 特征数据读写锁
-            engine_init_semaphore: 串行化 FaceEngine GPU 初始化的信号量（共享）
+            infer_queue: 推理请求队列（提交帧给 InferenceWorker）
+            result_queue: 推理结果队列（接收 InferenceWorker 分发的结果）
         """
         super().__init__(daemon=True)
 
@@ -253,10 +254,6 @@ class CameraThread(threading.Thread):
         self.frame_count = 0
         self.last_fps_time = time.time()
 
-        # FaceEngine 延迟初始化（在 run 方法中进行）
-        self.engine = None
-        self._engine_initialized = False
-
         # 采样器：用于定期上报识别结果
         self.best_results = {}  # {name: {"score": score, "image": image}}
         self.best_results_lock = threading.Lock()
@@ -267,22 +264,20 @@ class CameraThread(threading.Thread):
         # 使用 Session 复用 HTTP 连接
         self.session = requests.Session()
 
+        self.infer_queue  = infer_queue
+        self.result_queue = result_queue
+        self.frame_index  = 0           # 单调递增帧计数，用作 frame_id
+        self.cached_detections = []     # 缓存最新推理结果，推理未完成时继续使用
+
         # flush 线程通信队列（放 records list，非阻塞）
         self._flush_queue: queue.Queue = queue.Queue(maxsize=50)
         self._flush_thread_obj: Optional[threading.Thread] = None
-
-        # 跳帧识别配置
-        self.skip_frames = SKIP_FRAMES
-        self.frame_index = 0  # 帧计数器
-        self.cached_detections = []  # 缓存的识别结果，用于插值显示
 
         # 畸变校正配置
         self.undistort_config = camera_config.get('undistort')
         self.undistort_mapx = None
         self.undistort_mapy = None
         self.undistort_roi = None
-
-        self.engine_init_semaphore = engine_init_semaphore or threading.Semaphore(1)
 
     @property
     def running(self):
@@ -323,16 +318,6 @@ class CameraThread(threading.Thread):
     def last_frame_time(self, value):
         with self._state_lock:
             self._last_frame_time = value
-
-    @property
-    def engine_initialized(self):
-        with self._state_lock:
-            return self._engine_initialized
-
-    @engine_initialized.setter
-    def engine_initialized(self, value):
-        with self._state_lock:
-            self._engine_initialized = value
 
     def _init_undistort(self, frame_width: int, frame_height: int):
         """
@@ -495,25 +480,6 @@ class CameraThread(threading.Thread):
         # 确保 RTSP 环境变量只设置一次（线程安全）
         _ensure_rtsp_env()
 
-        # 延迟初始化 FaceEngine（通过信号量串行化 GPU 资源初始化）
-        if not self.engine_initialized:
-            print(f"CameraThread [{self.camera_name}]: 等待 FaceEngine 初始化资源...")
-            with self.engine_init_semaphore:
-                if not self.engine_initialized:  # double-check after acquiring semaphore
-                    print(f"CameraThread [{self.camera_name}]: 初始化 FaceEngine...")
-                    try:
-                        self.engine = FaceEngine(
-                            rec_model_path=ARCFACE_MODEL_PATH,
-                            providers=PROVIDERS,
-                            det_thresh=DET_THRESH
-                        )
-                        self.engine_initialized = True
-                        print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化完成")
-                    except Exception as e:
-                        print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化失败: {e}")
-                        self.running = False
-                        return
-
         # 持久重连外层循环：线程不会因 RTSP 连接失败而永久终止
         while self.running:
             cap = None
@@ -619,50 +585,35 @@ class CameraThread(threading.Thread):
                     self.frame_count = 0
                     self.last_fps_time = current_time
 
-                # 跳帧识别：每隔 skip_frames 帧进行一次识别
-                # 中间帧使用缓存的识别结果进行显示
-                should_detect = (self.frame_index % (self.skip_frames + 1) == 0)
-
                 # 应用畸变校正
                 frame = self._apply_undistort(frame)
 
-                if should_detect:
-                    # 进行人脸检测和识别
-                    try:
-                        faces = self.engine.detect_and_extract(frame)
-                        detections = []
+                # 提交帧到推理队列（非阻塞，队列满时跳过本帧）
+                try:
+                    self.infer_queue.put_nowait((self.camera_id, self.frame_index, frame))
+                except queue.Full:
+                    pass
 
-                        for face in faces:
-                            bbox = face['bbox']
-                            embedding = face['embedding']
-                            aligned_face = face['aligned_face']
+                # 非阻塞取推理结果，有结果则更新缓存，无结果则继续用缓存
+                try:
+                    _, faces = self.result_queue.get_nowait()
+                    detections = []
+                    for face in faces:
+                        name, score, is_suspicious = self._identify(face['embedding'])
+                        detections.append({
+                            'bbox': face['bbox'],
+                            'name': name,
+                            'score': score,
+                            'is_suspicious': is_suspicious,
+                            'aligned_face': face['aligned_face']
+                        })
+                        if name != "Unknown" and not is_suspicious:
+                            self._process_detection(name, score, face['aligned_face'])
+                    self.cached_detections = detections
+                except queue.Empty:
+                    pass
 
-                            # 识别
-                            name, score, is_suspicious = self._identify(embedding)
-
-                            # 记录检测结果
-                            detection = {
-                                'bbox': bbox,
-                                'name': name,
-                                'score': score,
-                                'is_suspicious': is_suspicious,
-                                'aligned_face': aligned_face
-                            }
-                            detections.append(detection)
-
-                            # 生成识别记录（非 Unknown 且非疑似）
-                            if name != "Unknown" and not is_suspicious:
-                                self._process_detection(name, score, aligned_face)
-
-                        # 更新缓存并原子地更新帧+检测结果
-                        self.cached_detections = detections
-                        self.update_latest_frame(frame, detections)
-
-                    except Exception as e:
-                        print(f"CameraThread [{self.camera_name}]: 处理异常: {e}")
-                else:
-                    # 使用缓存的识别结果（插值显示）
-                    self.update_latest_frame(frame, self.cached_detections)
+                self.update_latest_frame(frame, self.cached_detections)
 
                 self.last_frame_time = time.time()
 
