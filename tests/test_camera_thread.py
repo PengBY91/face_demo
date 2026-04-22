@@ -10,13 +10,14 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Stub heavy dependencies that require GPU/models
+# Note: utils.gallery_manager is NOT stubbed so test_sqlite.py can import it correctly
 for mod in [
     'cv2', 'onnxruntime', 'onnx',
     'insightface', 'insightface.app', 'insightface.model_zoo', 'insightface.utils',
     'insightface.utils.face_align',
     'sklearn', 'sklearn.metrics', 'sklearn.metrics.pairwise',
     'PIL', 'PIL.Image', 'PIL.ImageDraw', 'PIL.ImageFont',
-    'utils.face_engine', 'utils.gallery_manager', 'utils.cv_utils',
+    'utils.face_engine', 'utils.cv_utils',
 ]:
     if mod not in sys.modules:
         sys.modules[mod] = MagicMock()
