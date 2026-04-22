@@ -156,7 +156,8 @@ class CameraThread(threading.Thread):
 
     def __init__(self, camera_config: dict, gallery: GalleryManager,
                  detection_queue: queue.Queue, feature_db: dict,
-                 feature_lock: threading.Lock):
+                 feature_lock: threading.Lock,
+                 engine_init_semaphore: Optional[threading.Semaphore] = None):
         """
         初始化摄像头线程
 
@@ -166,6 +167,7 @@ class CameraThread(threading.Thread):
             detection_queue: 识别记录队列（共享）
             feature_db: 特征数据库字典 {'vectors': np.ndarray, 'names': List[str]}（共享）
             feature_lock: 特征数据读写锁
+            engine_init_semaphore: 串行化 FaceEngine GPU 初始化的信号量（共享）
         """
         super().__init__(daemon=True)
 
@@ -218,6 +220,8 @@ class CameraThread(threading.Thread):
         self.undistort_mapx = None
         self.undistort_mapy = None
         self.undistort_roi = None
+
+        self.engine_init_semaphore = engine_init_semaphore or threading.Semaphore(1)
 
     @property
     def running(self):
@@ -430,21 +434,24 @@ class CameraThread(threading.Thread):
         # 确保 RTSP 环境变量只设置一次（线程安全）
         _ensure_rtsp_env()
 
-        # 延迟初始化 FaceEngine（避免多线程同时初始化 GPU 资源冲突）
+        # 延迟初始化 FaceEngine（通过信号量串行化 GPU 资源初始化）
         if not self.engine_initialized:
-            print(f"CameraThread [{self.camera_name}]: 初始化 FaceEngine...")
-            try:
-                self.engine = FaceEngine(
-                    rec_model_path=ARCFACE_MODEL_PATH,
-                    providers=PROVIDERS,
-                    det_thresh=DET_THRESH
-                )
-                self.engine_initialized = True
-                print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化完成")
-            except Exception as e:
-                print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化失败: {e}")
-                self.running = False
-                return
+            print(f"CameraThread [{self.camera_name}]: 等待 FaceEngine 初始化资源...")
+            with self.engine_init_semaphore:
+                if not self.engine_initialized:  # double-check after acquiring semaphore
+                    print(f"CameraThread [{self.camera_name}]: 初始化 FaceEngine...")
+                    try:
+                        self.engine = FaceEngine(
+                            rec_model_path=ARCFACE_MODEL_PATH,
+                            providers=PROVIDERS,
+                            det_thresh=DET_THRESH
+                        )
+                        self.engine_initialized = True
+                        print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化完成")
+                    except Exception as e:
+                        print(f"CameraThread [{self.camera_name}]: FaceEngine 初始化失败: {e}")
+                        self.running = False
+                        return
 
         # 持久重连外层循环：线程不会因 RTSP 连接失败而永久终止
         while self.running:
@@ -766,24 +773,23 @@ class MultiCameraApp:
             self._load_gallery()
 
     def _start_cameras(self):
-        """启动所有启用的摄像头线程（并行启动，错开初始化）"""
+        """启动所有启用的摄像头线程（共享初始化 Semaphore，串行 GPU 初始化）"""
         cameras = get_enabled_cameras()
         print(f"MultiCameraApp: 启动 {len(cameras)} 路摄像头...")
 
-        for i, cam_config in enumerate(cameras):
+        engine_init_semaphore = threading.Semaphore(1)
+
+        for cam_config in cameras:
             thread = CameraThread(
                 camera_config=cam_config,
                 gallery=self.gallery,
                 detection_queue=self.detection_queue,
                 feature_db=self.feature_db,
-                feature_lock=self.feature_lock
+                feature_lock=self.feature_lock,
+                engine_init_semaphore=engine_init_semaphore
             )
             thread.start()
             self.camera_threads.append(thread)
-
-            # 错开启动，避免同时初始化 GPU 资源
-            if i < len(cameras) - 1:
-                time.sleep(0.5)
 
     def _auto_poll_camera(self):
         """自动轮询摄像头：当前摄像头超时或轮询间隔到达时切换到下一个有画面的摄像头"""

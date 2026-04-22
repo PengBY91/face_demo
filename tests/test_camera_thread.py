@@ -28,7 +28,7 @@ _cv2_mock.imencode = lambda fmt, img: (True, MagicMock(tobytes=lambda: b'fake_jp
 from multi_camera_demo import CameraThread
 
 
-def _make_thread():
+def _make_thread(engine_init_semaphore=None):
     cam_cfg = {
         'id': 'cam_test', 'name': 'Test', 'type': 'rtsp',
         'host': '127.0.0.1', 'port': 554, 'username': '',
@@ -40,7 +40,8 @@ def _make_thread():
     feature_db = {'vectors': np.empty((0, 512)), 'names': []}
     feature_lock = threading.Lock()
     det_queue = q_mod.Queue(maxsize=100)
-    return CameraThread(cam_cfg, gallery, det_queue, feature_db, feature_lock)
+    return CameraThread(cam_cfg, gallery, det_queue, feature_db, feature_lock,
+                        engine_init_semaphore=engine_init_semaphore)
 
 
 class TestFlushThread(unittest.TestCase):
@@ -121,6 +122,20 @@ class TestFrameLock(unittest.TestCase):
         f, _ = t.get_latest_frame()
         self.assertFalse(np.array_equal(f[0, 0], [99, 99, 99]),
                          "Internal frame should not be affected by external mutation")
+
+
+class TestFaceEngineInitSerialization(unittest.TestCase):
+    def test_semaphore_parameter_accepted(self):
+        """CameraThread 应接受 engine_init_semaphore 参数"""
+        sem = threading.Semaphore(1)
+        t = _make_thread(engine_init_semaphore=sem)
+        self.assertIs(t.engine_init_semaphore, sem)
+
+    def test_default_semaphore_created_when_not_provided(self):
+        """未提供 semaphore 时应自动创建 Semaphore(1)"""
+        t = _make_thread()
+        self.assertIsNotNone(t.engine_init_semaphore)
+        self.assertIsInstance(t.engine_init_semaphore, type(threading.Semaphore(1)))
 
 
 if __name__ == '__main__':
