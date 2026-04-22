@@ -234,6 +234,52 @@ class FaceEngine:
 
         return face['embedding']
 
+    def batch_detect_and_extract(self, frames: List[np.ndarray]) -> List[List[Dict]]:
+        """
+        批量处理多帧，一次 GPU 调用提取所有人脸特征。
+
+        Args:
+            frames: BGR 图像列表
+
+        Returns:
+            与 frames 等长的列表，每个元素是该帧检测到的人脸列表。
+            人脸 dict 结构与 detect_and_extract 相同：
+            bbox, landmarks, embedding, aligned_face, det_score
+        """
+        results: List[List[Dict]] = [[] for _ in frames]
+        all_aligned: List[np.ndarray] = []
+        face_map: List[tuple] = []  # (frame_idx, partial_face_dict)
+
+        # 第一步：逐帧检测，收集对齐人脸
+        for frame_idx, frame in enumerate(frames):
+            faces = self.det_model.get(frame)
+            for face in faces:
+                if face.det_score < self.det_thresh:
+                    continue
+                bbox = face.bbox.astype(int)
+                landmarks = face.kps
+                aligned = face_align.norm_crop(frame, landmarks, image_size=112)
+                all_aligned.append(aligned)
+                face_map.append((frame_idx, {
+                    'bbox': bbox.tolist(),
+                    'landmarks': landmarks.astype(int).tolist(),
+                    'aligned_face': aligned,
+                    'det_score': float(face.det_score),
+                }))
+
+        if not all_aligned:
+            return results
+
+        # 第二步：一次 batch 调用提取所有特征
+        embeddings = self.rec_model.get_feat(all_aligned)  # shape: (N, 512)
+
+        # 第三步：分发 embedding 到对应帧
+        for i, (frame_idx, face_dict) in enumerate(face_map):
+            face_dict['embedding'] = embeddings[i].flatten()
+            results[frame_idx].append(face_dict)
+
+        return results
+
     @staticmethod
     def _bbox_area(bbox: List[int]) -> float:
         """计算边界框面积"""
