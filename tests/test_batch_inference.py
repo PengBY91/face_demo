@@ -87,3 +87,18 @@ def test_batch_face_dict_has_required_keys():
     for key in ('bbox', 'landmarks', 'embedding', 'aligned_face', 'det_score'):
         assert key in face, f"missing key: {key}"
     assert face['embedding'].shape == (512,)
+
+
+def test_batch_embeddings_routed_to_correct_frame():
+    engine = _make_engine()
+    sentinel_0 = np.full(512, 0.1, dtype=np.float32)
+    sentinel_1 = np.full(512, 0.9, dtype=np.float32)
+    engine.rec_model.get_feat.side_effect = lambda imgs: np.stack([sentinel_0, sentinel_1])
+    frames = [np.zeros((480, 640, 3), dtype=np.uint8) for _ in range(2)]
+
+    with patch('utils.face_engine.face_align') as mock_align:
+        mock_align.norm_crop.return_value = np.zeros((112, 112, 3), dtype=np.uint8)
+        results = engine.batch_detect_and_extract(frames)
+
+    np.testing.assert_array_almost_equal(results[0][0]['embedding'], sentinel_0)
+    np.testing.assert_array_almost_equal(results[1][0]['embedding'], sentinel_1)
